@@ -1,0 +1,26 @@
+﻿# Dependências
+node_modules/
+
+# Builds e instaladores
+dist/
+dist-native/
+
+# Logs e arquivos temporários
+*.log
+.tempmediaStorage/
+.user_uploaded/
+scratch/
+
+# Sistema operacional
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Variáveis locais
+.env
+
+# Scripts temporários de correção
+fix*.js
+apply_copy_shortcut.js
+list_autosaves.js

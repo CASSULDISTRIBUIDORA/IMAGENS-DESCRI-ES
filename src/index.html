@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MultiPic - Editor e Processador em Lote</title>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="index.css">
+</head>
+<body>
+
+<div class="app-container">
+
+    <!-- ================= HEADER ================= -->
+    <header class="app-titlebar" id="app-titlebar">
+        <div class="titlebar-drag-region"></div>
+        <div class="titlebar-left">
+            <div class="logo-container">
+                <i data-lucide="layers" class="logo-icon"></i>
+                <div class="logo-text">MULTI <span>PIC</span></div>
+                <div class="app-version" id="app-version">v1.0.0</div>
+            </div>
+            <nav class="titlebar-menu">
+                <div class="menu-item" id="menu-arquivo">
+                    <span>Arquivo</span>
+                    <div class="menu-dropdown">
+                        <button class="menu-dropdown-item" id="menu-abrir-imagens"><i data-lucide="image-plus"></i> Abrir Imagens <span class="shortcut">Ctrl+O</span></button>
+                        <button class="menu-dropdown-item" id="menu-abrir-pasta"><i data-lucide="folder-open"></i> Abrir Pasta</button>
+                        <div class="menu-divider"></div>
+                        <button class="menu-dropdown-item" id="menu-exportar"><i data-lucide="download"></i> Exportar <span class="shortcut">Ctrl+S</span></button>
+                        <div class="menu-divider"></div>
+                        <button class="menu-dropdown-item" id="menu-configuracoes"><i data-lucide="settings"></i> Configurações</button>
+                    </div>
+                </div>
+                <div class="menu-item" id="menu-editar">
+                    <span>Editar</span>
+                    <div class="menu-dropdown">
+                        <button class="menu-dropdown-item" id="menu-desfazer"><i data-lucide="undo-2"></i> Desfazer <span class="shortcut">Ctrl+Z</span></button>
+                        <button class="menu-dropdown-item" id="menu-refazer"><i data-lucide="redo-2"></i> Refazer <span class="shortcut">Ctrl+Y</span></button>
+                        <div class="menu-divider"></div>
+                        <button class="menu-dropdown-item" id="menu-remover-fundo"><i data-lucide="scissors"></i> Remover Fundo (Automático)</button>
+                        <button class="menu-dropdown-item" id="menu-remover-fundo-objeto"><i data-lucide="sparkles"></i> Forçar Recorte de Objeto (IA)</button>
+                        <button class="menu-dropdown-item" id="menu-remover-fundo-embalagem"><i data-lucide="package"></i> Forçar Preservar Embalagem</button>
+                        <button class="menu-dropdown-item" id="menu-resetar"><i data-lucide="rotate-ccw"></i> Resetar Ajustes</button>
+                    </div>
+                </div>
+                <div class="menu-item" id="menu-visualizar">
+                    <span>Visualizar</span>
+                    <div class="menu-dropdown">
+                        <button class="menu-dropdown-item" id="menu-zoom-in"><i data-lucide="zoom-in"></i> Zoom + <span class="shortcut">Ctrl++</span></button>
+                        <button class="menu-dropdown-item" id="menu-zoom-out"><i data-lucide="zoom-out"></i> Zoom - <span class="shortcut">Ctrl+-</span></button>
+                        <button class="menu-dropdown-item" id="menu-zoom-reset"><i data-lucide="maximize-2"></i> Ajustar à Tela <span class="shortcut">Ctrl+0</span></button>
+                        <div class="menu-divider"></div>
+                        <button class="menu-dropdown-item" id="menu-ver-original"><i data-lucide="eye"></i> Ver Original <span class="shortcut">Espaço</span></button>
+                    </div>
+                </div>
+            </nav>
+        </div>
+        <div class="titlebar-right">
+            <button id="btn-open-settings" class="titlebar-btn" title="Configurações">
+                <i data-lucide="settings"></i>
+            </button>
+            <div class="titlebar-separator"></div>
+            <button class="titlebar-btn window-control" id="btn-minimize" title="Minimizar">
+                <i data-lucide="minus"></i>
+            </button>
+            <button class="titlebar-btn window-control" id="btn-maximize" title="Maximizar">
+                <i data-lucide="square"></i>
+            </button>
+            <button class="titlebar-btn window-control btn-close" id="btn-close" title="Fechar">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- ================= VIEW 1: UPLOAD ================= -->
+    <div id="view-upload" class="view view-upload">
+        <!-- Update Notification (Demo) -->
+        <div class="update-notification" id="update-notification" style="display: none;">
+            <i data-lucide="info" class="text-info"></i>
+            <span>Nova atualização disponível!</span>
+        </div>
+
+        <div class="upload-area" id="upload-dropzone">
+            <div class="upload-icon-container">
+                <i data-lucide="upload-cloud"></i>
+            </div>
+            <div>
+                <h2 class="upload-title">Arraste suas imagens aqui</h2>
+                <p class="upload-subtitle">ou clique para selecionar • PNG, JPG, WEBP</p>
+            </div>
+            <div class="upload-actions">
+                <button class="btn btn-primary btn-lg" id="btn-select-images">
+                    <i data-lucide="image"></i>
+                    SELECIONAR IMAGENS
+                </button>
+                <button class="btn btn-secondary btn-lg" id="btn-select-folder">
+                    <i data-lucide="folder-open"></i>
+                    ABRIR PASTA
+                </button>
+            </div>
+            <input type="file" id="file-input" multiple accept="image/png, image/jpeg, image/webp" style="display: none;">
+            <input type="file" id="folder-input" webkitdirectory directory style="display: none;">
+        </div>
+    </div>
+
+    <!-- ================= VIEW 2: EDITOR ================= -->
+    <div id="view-editor" class="view active">
+        <div class="editor-layout">
+            
+            <!-- Left Sidebar -->
+            <aside class="editor-sidebar">
+                <!-- Section: Ajustes -->
+                <div class="sidebar-section">
+                    <div class="sidebar-title">
+                        <i data-lucide="sliders-horizontal"></i> Ajustes
+                    </div>
+                    
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Brilho</label>
+                            <span class="range-slider-val" id="value-brightness">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-brightness">
+                    </div>
+
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Contraste</label>
+                            <span class="range-slider-val" id="value-contrast">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-contrast">
+                    </div>
+
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Saturação</label>
+                            <span class="range-slider-val" id="value-saturation">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-saturation">
+                    </div>
+
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Temperatura</label>
+                            <span class="range-slider-val" id="value-temperature">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-temperature">
+                    </div>
+
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Matiz</label>
+                            <span class="range-slider-val" id="value-hue">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-hue">
+                    </div>
+                </div>
+
+                <!-- Section: Iluminação -->
+                <div class="sidebar-section">
+                    <div class="sidebar-title">
+                        <i data-lucide="sun"></i> Iluminação
+                    </div>
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Destaques</label>
+                            <span class="range-slider-val" id="value-highlights">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-highlights">
+                    </div>
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Sombras</label>
+                            <span class="range-slider-val" id="value-shadows">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-shadows">
+                    </div>
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Brancos</label>
+                            <span class="range-slider-val" id="value-whites">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-whites">
+                    </div>
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Pretos</label>
+                            <span class="range-slider-val" id="value-blacks">0</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-100" max="100" value="0" id="slider-blacks">
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 16px;">
+                        <button class="btn btn-primary btn-sm btn-ai-action" id="btn-auto-adjust" style="flex:1; font-size: 11px; padding: 4px 6px;">
+                            <i data-lucide="wand-2" style="width:12px;height:12px;"></i> Auto
+                        </button>
+                        <button class="btn btn-ghost btn-sm" id="btn-reset-adjustments" style="flex:1; font-size: 11px; padding: 4px 6px;">
+                            <i data-lucide="rotate-ccw" style="width:12px;height:12px;"></i> Resetar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Section: Recorte e Posição -->
+                <div class="sidebar-section">
+                    <div class="sidebar-title">
+                        <i data-lucide="crop"></i> Recorte e Posição
+                    </div>
+                    
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Zoom</label>
+                            <span class="range-slider-val" id="value-zoom">100%</span>
+                        </div>
+                        <input type="range" class="range-slider" min="10" max="300" value="100" id="slider-zoom">
+                    </div>
+
+                    <div class="position-controls">
+                        <div class="form-group">
+                            <label class="form-label">Posição X</label>
+                            <input type="number" class="form-control" value="0" id="slider-posX">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Posição Y</label>
+                            <input type="number" class="form-control" value="0" id="slider-posY">
+                        </div>
+                    </div>
+
+                    <div class="range-slider-container">
+                        <div class="range-slider-header">
+                            <label>Rotação</label>
+                            <span class="range-slider-val" id="value-rotation">0°</span>
+                        </div>
+                        <input type="range" class="range-slider" min="-180" max="180" value="0" id="slider-rotation">
+                    </div>
+
+                    <div>
+                        <label class="form-label" style="font-size: 11px; margin-bottom: 4px;">Cor de Fundo</label>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <button class="preview-bg-btn active" data-color="#ffffff" style="background:#ffffff;" title="Branco"></button>
+                            <button class="preview-bg-btn" data-color="#f0f0f0" style="background:#f0f0f0;" title="Cinza Claro"></button>
+                            <button class="preview-bg-btn" data-color="#000000" style="background:#000000; border-color: rgba(255,255,255,0.2);" title="Preto"></button>
+                            <button class="preview-bg-btn" data-color="#e8e0d4" style="background:#e8e0d4;" title="Bege"></button>
+                            <input type="color" id="preview-bg-custom" value="#ffffff" title="Personalizada" style="width: 22px; height: 22px; padding: 0; border: 2px solid rgba(255,255,255,0.1); border-radius: 4px; cursor: pointer; background: none;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Pincéis IA -->
+                <div class="sidebar-section">
+                    <div class="sidebar-title">
+                        <i data-lucide="brush"></i> Pincéis IA
+                    </div>
+                    <div class="brush-tabs">
+                        <button class="brush-tab" id="brush-tab-eraser" onclick="window._app?.editor?.switchBrushTab('eraser')">
+                            <i data-lucide="eraser" style="width:12px;height:12px;"></i> Borracha
+                        </button>
+                        <button class="brush-tab" id="brush-tab-generative" onclick="window._app?.editor?.switchBrushTab('generative')">
+                            <i data-lucide="sparkles" style="width:12px;height:12px;"></i> Generativo
+                        </button>
+                    </div>
+                    <div id="magic-eraser-controls" style="display: none; flex-direction: column; gap: 6px;">
+                        <div class="range-slider-container">
+                            <div class="range-slider-header">
+                                <label>Tamanho do Pincel</label>
+                                <span class="range-slider-val" id="eraser-brush-val">30</span>
+                            </div>
+                            <input type="range" class="range-slider" min="2" max="150" value="30" id="eraser-brush-size" oninput="window._app?.editor?.updateEraserBrushSize(this.value); document.getElementById('eraser-brush-val').textContent=this.value;">
+                        </div>
+                        <div style="display: flex; gap: 6px;">
+                            <button class="btn btn-ghost btn-sm" style="flex:1; font-size: 10px;" onclick="window._app?.editor?.clearMagicEraserCanvas(); window._app?.editor?.initMagicEraserCanvas();">
+                                <i data-lucide="rotate-ccw" style="width:10px;height:10px;"></i> Limpar
+                            </button>
+                            <button class="btn btn-primary btn-sm" id="btn-eraser-apply" style="flex:1; font-size: 10px;" onclick="window._app?.editor?.applyBrush()">
+                                <i data-lucide="eraser" style="width:10px;height:10px;"></i> Apagar Seleção
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+
+            </aside>
+
+            <!-- Vertical Toolbar -->
+            <nav class="editor-vertical-toolbar" id="editor-vertical-toolbar">
+                <button class="vtool-btn" id="btn-open-batch-import" title="Criar páginas em lote por texto livre">
+                    <i data-lucide="layers" style="width: 18px; height: 18px;"></i>
+                    <span class="vtool-badge">+</span>
+                </button>
+            </nav>
+
+            <!-- Main Canvas Area - Pages System -->
+            <main class="editor-main" id="pages-container">
+                <!-- Pages serão criadas dinamicamente pelo JS -->
+                <!-- Template de página (usado pelo JS): -->
+                <!--
+                <div class="page-wrapper" data-page-id="X">
+                    <div class="page-header">
+                        <div class="page-title">Página X - <input class="page-sku-input" placeholder="SKU"></div>
+                        <div class="page-actions">...</div>
+                    </div>
+                    <div class="canvas-container"><canvas></canvas></div>
+                    <div class="page-footer">
+                        <div class="page-export-options">checkboxes</div>
+                        <button>Exportar esta página</button>
+                    </div>
+                </div>
+                -->
+
+                <!-- Botões Inferiores -->
+                <div class="add-page-container" style="display: flex; gap: 10px; justify-content: center; width: 100%; margin-top: 20px;">
+                    <button class="btn-add-page" id="btn-add-page">
+                        <i data-lucide="plus"></i> Adicionar Página
+                    </button>
+                </div>
+                
+
+                <!-- Painel de Seleção de Cenário (IA) -->
+                <div class="ai-thumbnails-container" id="ai-thumbnails-container" style="display: none;">
+                    <div style="display: flex; gap: 12px;" id="ai-thumbnails-list">
+                        <!-- Thumbnails injectadas via JS -->
+                    </div>
+                    <div class="ai-thumbnails-actions">
+                        <button class="btn btn-primary btn-sm" id="btn-ai-confirm">
+                            <i data-lucide="check" style="width:14px;height:14px;"></i> Confirmar
+                        </button>
+                        <button class="btn btn-ghost btn-sm" id="btn-ai-cancel">
+                            <i data-lucide="x" style="width:14px;height:14px;"></i> Cancelar
+                        </button>
+                        <button class="btn btn-secondary btn-sm btn-ai-action" id="btn-ai-regen" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 4px;">
+                            <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> Gerar Novamente
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Processing Overlay -->
+                <div class="canvas-overlay" id="editor-loading">
+                    <div class="spinner"></div>
+                    <div class="text-md font-medium">Processando imagem...</div>
+                </div>
+            </main>
+
+            <!-- Right Sidebar -->
+            <aside class="editor-sidebar editor-sidebar-right">
+                
+                <div class="text-xs text-secondary" id="desc-page-indicator" style="padding: 8px 12px 4px; border-bottom: 1px solid var(--border-color);">Nenhuma página selecionada</div>
+
+                <!-- Card Produto (Foto + Dados) -->
+                <div id="product-ref-card" style="display: none; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">
+                    <div style="display: flex; gap: 10px; align-items: flex-start;">
+                        <div id="product-ref-img-wrap" style="width: 90px; height: 90px; min-width: 90px; border-radius: 6px; overflow: hidden; background: #fff; border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center;">
+                            <img id="product-ref-img" style="max-width: 100%; max-height: 100%; object-fit: contain;" src="">
+                            <span id="product-ref-img-empty" style="font-size: 9px; color: var(--text-muted); text-align: center;">Sem foto</span>
+                        </div>
+                        <div id="product-ref-info" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; cursor: pointer;" title="Clique para pesquisar no Google Imagens e copiar a foto (Ctrl+V no navegador)">
+                            <div id="product-ref-code" style="font-size: 13px; font-weight: 700; color: var(--primary-color);"></div>
+                            <div id="product-ref-name" style="font-size: 11px; color: var(--text-primary); line-height: 1.3; word-wrap: break-word; font-weight: 600;"></div>
+                            <div id="product-ref-brand" style="font-size: 10px; color: var(--text-muted); font-style: italic;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Descrição Original (Sankhya) -->
+                <div class="sidebar-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                    <div class="sidebar-title" style="font-size: 11px;">
+                        <i data-lucide="database" style="width:12px;height:12px;"></i> Descrição Sankhya
+                    </div>
+                    <textarea class="form-control" id="textarea-descricao-original" style="flex: 1; resize: none; font-size: 11px;" placeholder="Busque um SKU para ver a descrição atual..."></textarea>
+                    <button class="btn btn-secondary btn-sm btn-block" id="btn-salvar-sankhya" style="margin-top: 6px; font-size: 11px;">
+                        <i data-lucide="save" style="width:12px;height:12px;"></i> Salvar no Sankhya
+                    </button>
+                </div>
+
+                <!-- Imagem de Referência para IA (OCR) -->
+                <div class="sidebar-section" style="padding: 10px 16px; border-bottom: 1px solid var(--border-color);">
+                    <div class="sidebar-title" style="font-size: 11px;">
+                        <i data-lucide="image" style="width:12px;height:12px;"></i> Referência para IA (Bula/Rótulo)
+                    </div>
+                    <div id="ocr-dropzone" style="border: 1px dashed var(--border-color); border-radius: 4px; padding: 10px; text-align: center; color: var(--text-secondary); font-size: 10px; cursor: pointer; transition: all 0.2s;" tabindex="0">
+                        Clique para colar do clipboard ou solte a imagem
+                    </div>
+                    <img id="ocr-preview" style="display: none; max-width: 100%; max-height: 100px; margin-top: 8px; border-radius: 4px; border: 1px solid var(--border-color); object-fit: contain;">
+                    <button class="btn btn-ghost btn-sm" id="btn-remove-ocr" style="display: none; width: 100%; margin-top: 4px; font-size: 10px; color: var(--danger-color);">
+                        Remover Imagem
+                    </button>
+                </div>
+
+                <!-- Descrição Nova (Gerada pela IA) -->
+                <div class="sidebar-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-bottom: 8px;">
+                        <div class="sidebar-title" style="font-size: 11px; border: none; padding-bottom: 0; margin-bottom: 0;">
+                            <i data-lucide="sparkles" style="width:12px;height:12px;"></i> Nova Descrição
+                        </div>
+                        <button class="btn btn-primary btn-sm btn-ai-action" id="btn-reescrever-ia" style="display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; font-size: 10px; padding: 2px 8px; height: 24px;">
+                            <i data-lucide="wand-2" style="width:10px;height:10px;"></i> Gerar
+                        </button>
+                    </div>
+                    <textarea class="form-control" id="textarea-descricao" style="flex: 1; resize: none; font-size: 11px;" placeholder="Preencha as referências acima e clique em Gerar..."></textarea>
+
+                    <div id="ai-action-buttons" style="display: none; gap: 6px; margin-top: 6px;">
+                        <button class="btn btn-sm" id="btn-publicar-sankhya" style="flex: 1; font-size: 11px; background-color: #F97316; color: white; border: none;">
+                            <i data-lucide="upload" style="width:12px;height:12px;"></i> Publicar
+                        </button>
+                    </div>
+
+                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 12px 0;">
+                    
+                    <button class="btn btn-sm btn-block" id="btn-magic-process" style="font-size: 11px; background: linear-gradient(90deg, #8B5CF6, #3B82F6); color: white; border: none; font-weight: bold; padding: 10px;">
+                        <i data-lucide="zap" style="width:14px;height:14px; fill: white;"></i> Salvar Tudo e Validar
+                    </button>
+                </div>
+
+            </aside>
+
+        </div>
+    </div>
+
+    <!-- ================= VIEW 3: BATCH (LOTE) ================= -->
+    <div id="view-batch" class="view view-batch">
+        <div class="batch-header">
+            <div class="batch-header-top">
+                <div class="batch-title">
+                    <button class="btn btn-ghost btn-icon" id="btn-back-upload" title="Voltar">
+                        <i data-lucide="arrow-left"></i>
+                    </button>
+                    <span id="batch-count">Lote de Imagens (12)</span>
+                </div>
+                <div class="batch-actions">
+                    <button class="btn btn-secondary" id="btn-process-all">
+                        <i data-lucide="play"></i> Processar Todas
+                    </button>
+                    <button class="btn btn-primary" id="btn-export-all">
+                        <i data-lucide="download"></i> Exportar Todas
+                    </button>
+                </div>
+            </div>
+            
+            <div class="batch-progress-container">
+                <div class="batch-progress-text" id="batch-progress-text">
+                    <span>Progresso Geral</span>
+                    <span>45% (5/12)</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar-fill" id="batch-progress-bar" style="width: 45%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="batch-content">
+            <div class="batch-grid" id="batch-grid">
+                
+                <!-- Card 1 -->
+                <div class="batch-card">
+                    <div class="batch-card-thumb">
+                        <!-- Placeholder Image -->
+                        <div style="width: 100%; height: 100%; background: #333; display: flex; align-items:center; justify-content:center; color:#666;">IMG</div>
+                        <div class="badge badge-ready batch-card-badge">
+                            <i data-lucide="check" size="12"></i> Pronto
+                        </div>
+                        <div class="batch-card-overlay">
+                            <button class="btn btn-primary btn-icon" title="Editar"><i data-lucide="edit-2"></i></button>
+                            <button class="btn btn-danger btn-icon" title="Remover"><i data-lucide="trash-2"></i></button>
+                        </div>
+                    </div>
+                    <div class="batch-card-info">
+                        <input type="text" class="batch-card-sku" value="PROD-001" placeholder="SKU">
+                    </div>
+                </div>
+
+                <!-- Card 2 -->
+                <div class="batch-card">
+                    <div class="batch-card-thumb">
+                        <div style="width: 100%; height: 100%; background: #333; display: flex; align-items:center; justify-content:center; color:#666;">IMG</div>
+                        <div class="badge badge-processing batch-card-badge">
+                            <i data-lucide="loader" size="12" class="spinner"></i> Processando
+                        </div>
+                        <div class="batch-card-overlay">
+                            <button class="btn btn-primary btn-icon" title="Editar"><i data-lucide="edit-2"></i></button>
+                            <button class="btn btn-danger btn-icon" title="Remover"><i data-lucide="trash-2"></i></button>
+                        </div>
+                    </div>
+                    <div class="batch-card-info">
+                        <input type="text" class="batch-card-sku" value="PROD-002" placeholder="SKU">
+                    </div>
+                </div>
+
+                <!-- Card 3 -->
+                <div class="batch-card">
+                    <div class="batch-card-thumb">
+                        <div style="width: 100%; height: 100%; background: #333; display: flex; align-items:center; justify-content:center; color:#666;">IMG</div>
+                        <div class="badge badge-pending batch-card-badge">
+                            <i data-lucide="clock" size="12"></i> Pendente
+                        </div>
+                        <div class="batch-card-overlay">
+                            <button class="btn btn-primary btn-icon" title="Editar"><i data-lucide="edit-2"></i></button>
+                            <button class="btn btn-danger btn-icon" title="Remover"><i data-lucide="trash-2"></i></button>
+                        </div>
+                    </div>
+                    <div class="batch-card-info">
+                        <input type="text" class="batch-card-sku" placeholder="SKU">
+                    </div>
+                </div>
+
+                <!-- Card 4 Error -->
+                <div class="batch-card">
+                    <div class="batch-card-thumb">
+                        <div style="width: 100%; height: 100%; background: #333; display: flex; align-items:center; justify-content:center; color:#666;">IMG</div>
+                        <div class="badge badge-error batch-card-badge">
+                            <i data-lucide="alert-circle" size="12"></i> Erro
+                        </div>
+                        <div class="batch-card-overlay">
+                            <button class="btn btn-primary btn-icon" title="Editar"><i data-lucide="edit-2"></i></button>
+                            <button class="btn btn-danger btn-icon" title="Remover"><i data-lucide="trash-2"></i></button>
+                        </div>
+                    </div>
+                    <div class="batch-card-info">
+                        <input type="text" class="batch-card-sku" value="PROD-004" placeholder="SKU">
+                    </div>
+                </div>
+
+                <!-- Add More Box -->
+                <div class="batch-add-more" id="btn-batch-add-more">
+                    <i data-lucide="plus-circle" size="32"></i>
+                    <span>Adicionar Imagens</span>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+</div> <!-- End App Container -->
+
+<!-- ================= MODAL: CONFIGURAÇÕES ================= -->
+<div class="modal-overlay" id="modal-settings">
+    <div class="modal-container">
+        <div class="modal-header">
+            <h2 class="modal-title"><i data-lucide="settings"></i> Configurações</h2>
+            <button class="btn btn-ghost btn-icon modal-close" id="btn-close-settings" onclick="document.getElementById('modal-settings').style.display='none'">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+        
+        <div class="settings-layout">
+            <div class="settings-sidebar">
+                <div class="settings-menu-item active" data-tab="tab-geral"><i data-lucide="sliders"></i> Geral</div>
+                <div class="settings-menu-item" data-tab="tab-sankhya"><i data-lucide="database"></i> Sankhya & FTP</div>
+                <div class="settings-menu-item" data-tab="tab-fila"><i data-lucide="list-todo"></i> Fila de Trabalho</div>
+                <div class="settings-menu-item" data-tab="tab-gemini"><i data-lucide="brain"></i> Gemini IA</div>
+                <div class="settings-menu-item" data-tab="tab-perfis"><i data-lucide="layout-grid"></i> Perfis Exportação</div>
+                <div class="settings-menu-item" data-tab="tab-usage"><i data-lucide="bar-chart-3"></i> Uso de IA</div>
+            </div>
+            <div class="settings-content">
+                <!-- Geral -->
+                <div class="settings-tab-pane active" id="tab-geral">
+                    <div class="settings-section">
+                <h3 class="settings-section-title">Geral</h3>
+                <div class="form-group" style="max-width: 300px;">
+                    <label class="form-label">Processamento Paralelo (Imagens simultâneas)</label>
+                    <select class="form-control custom-select" id="settings-parallel">
+                        <option value="1">1 imagem</option>
+                        <option value="2">2 imagens</option>
+                        <option value="4" selected>4 imagens (Recomendado)</option>
+                        <option value="8">8 imagens (Requer mais CPU)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="max-width: 500px;">
+                    <label class="form-label">API Key — remove.bg (Remoção de Fundo)</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" class="form-control" id="settings-removebg-key" placeholder="Cole sua API Key aqui">
+                        <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-removebg-key');el.type=el.type==='password'?'text':'password'">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                    <div class="text-xs text-secondary" style="margin-top: 4px;">
+                        50 imagens grátis/mês — Crie sua conta em <a href="#" onclick="require('electron').shell.openExternal('https://www.remove.bg/api')" style="color: var(--primary);">remove.bg/api</a>
+              
+                    </div>
+                    </div>
+                </div>
+                </div> <!-- close tab-geral -->
+
+            <!-- Sankhya -->
+            <div class="settings-tab-pane" id="tab-sankhya">
+                <div class="settings-section">
+                <h3 class="settings-section-title">Sankhya ERP</h3>
+                <div class="form-group" style="max-width: 500px;">
+                    <label class="form-label">Ambiente</label>
+                    <select class="form-control" id="settings-sankhya-environment">
+                        <option value="sandbox">🧪 Sandbox (Testes)</option>
+                        <option value="production">🏭 Produção</option>
+                    </select>
+                    <div class="text-xs text-secondary" style="margin-top: 4px;">
+                        Sandbox: api.sandbox.sankhya.com.br &nbsp;|&nbsp; Produção: api.sankhya.com.br
+                    </div>
+                </div>
+                <div class="form-group" style="max-width: 500px;">
+                    <label class="form-label">Client ID</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" class="form-control" id="settings-sankhya-clientid" placeholder="Cole o Client ID aqui">
+                        <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-sankhya-clientid');el.type=el.type==='password'?'text':'password'">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group" style="max-width: 500px;">
+                    <label class="form-label">Client Secret</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" class="form-control" id="settings-sankhya-secret" placeholder="Cole o Client Secret aqui">
+                        <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-sankhya-secret');el.type=el.type==='password'?'text':'password'">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group" style="max-width: 500px;">
+                    <label class="form-label">Token Gateway (x-token)</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" class="form-control" id="settings-sankhya-token" placeholder="Cole o Token Gateway aqui">
+                        <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-sankhya-token');el.type=el.type==='password'?'text':'password'">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Query SQL (Busca de Características)</label>
+                    <textarea class="form-control" id="settings-sankhya-query" rows="4" placeholder="Ex: SELECT DESCRPROD, CARACTERISTICAS FROM TGFPRO WHERE CODPROD = {SKU}" style="resize: vertical; font-family: monospace; font-size: 12px;"></textarea>
+                    <div class="text-xs text-secondary" style="margin-top: 4px;">
+                        Use <strong>{SKU}</strong> como placeholder para o código do produto
+                    </div>
+                </div>
+
+                <div class="settings-subsection" style="margin-top: 24px; padding: 16px; background-color: var(--surface-hover); border-radius: 8px;">
+                    <h4 style="margin: 0 0 12px 0; font-size: 14px;">FTP - Imagens Alternativas</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 500px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Host</label>
+                            <input type="text" class="form-control" id="settings-sankhya-ftp-host" placeholder="192.168.10.140">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Usuário</label>
+                            <input type="text" class="form-control" id="settings-sankhya-ftp-user" placeholder="root">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Senha</label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="password" class="form-control" id="settings-sankhya-ftp-password" placeholder="Senha FTP">
+                                <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-sankhya-ftp-password');el.type=el.type==='password'?'text':'password'">
+                                    <i data-lucide="eye"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Caminho Remoto</label>
+                            <input type="text" class="form-control" id="settings-sankhya-ftp-path" placeholder="/home/mgeweb/repositorio/imagem/imagensprodutos">
+                        </div>
+                    </div>
+                </div>
+
+                </div>
+
+                </div> <!-- close tab-sankhya -->
+
+            <!-- Fila de Trabalho -->
+            <div class="settings-tab-pane" id="tab-fila">
+                <div class="settings-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
+                        <h3 class="settings-section-title" style="border: none; padding: 0; margin: 0;">Fila de Trabalho Automática</h3>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settings-sankhya-queue-enabled">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div class="form-group" style="max-width: 300px;">
+                        <label class="form-label">Frequência da Busca</label>
+                        <select class="form-control" id="settings-sankhya-queue-interval">
+                            <option value="5">A cada 5 minutos (Testes)</option>
+                            <option value="30">A cada 30 minutos</option>
+                            <option value="60">A cada 1 hora</option>
+                            <option value="180">A cada 3 horas</option>
+                            <option value="360">A cada 6 horas</option>
+                            <option value="720">A cada 12 horas</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Query SQL (Busca da Fila)</label>
+                        <textarea class="form-control" id="settings-sankhya-queue-query" rows="5" placeholder="Ex: SELECT p.CODPROD FROM TGFPRO p WHERE p.AD_STATUS = 'VL' {FILTRO_GRUPOS}" style="resize: vertical; font-family: monospace; font-size: 12px;"></textarea>
+                        <div class="text-xs text-secondary" style="margin-top: 4px;">
+                            Opcional: use <strong>{FILTRO_GRUPOS}</strong> para posicionar a regra dos Grupos Ignorados. Se omitir, será adicionado ao final.
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <div class="form-group">
+                            <label class="form-label">Campo Conclusão MKT</label>
+                            <input type="text" class="form-control" id="settings-sankhya-queue-field" placeholder="Ex: AD_VALIDADOMKT">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Valor Conclusão MKT</label>
+                            <input type="text" class="form-control" id="settings-sankhya-queue-value" placeholder="Ex: S">
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <label class="form-label" style="margin: 0;">Grupos Ignorados</label>
+                        </div>
+                        <div class="text-xs text-secondary" style="margin-bottom: 8px;">
+                            Marque os grupos que a fila de trabalho deve ignorar.
+                        </div>
+                        <input type="text" class="form-control" id="settings-groups-search" placeholder="Buscar grupo..." style="margin-bottom: 8px; font-size: 12px;">
+                        <div class="groups-checklist" id="settings-groups-checklist">
+                            <div class="text-secondary" style="font-size: 11px; padding: 12px; text-align: center;">
+                                Clique em "Carregar Grupos" para buscar do Sankhya
+                            </div>
+                        </div>
+                    </div>
+                    </div>
+                </div> <!-- close tab-fila -->
+
+            <!-- Gemini -->
+            <div class="settings-tab-pane" id="tab-gemini">
+                <div class="settings-section">
+                <h3 class="settings-section-title">Gemini IA</h3>
+                <div class="form-group" style="max-width: 500px;">
+                    <label class="form-label">API Key — Gemini</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" class="form-control" id="settings-gemini-key" placeholder="Cole sua API Key do Gemini aqui">
+                        <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-gemini-key');el.type=el.type==='password'?'text':'password'">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Prompt (Instruções para reescrita comercial)</label>
+                    <textarea class="form-control" id="settings-gemini-prompt" rows="6" placeholder="Cole aqui o prompt que você usa para reescrever os textos comercialmente..." style="resize: vertical; font-size: 11px;"></textarea>
+                    <div class="text-xs text-secondary" style="margin-top: 4px;">
+                        Use <strong>{TEXTO}</strong> como placeholder para o texto original do Sankhya
+                    </div>
+                </div>
+                </div>
+                </div> <!-- close tab-gemini -->
+
+            <!-- Profiles -->
+            <div class="settings-tab-pane" id="tab-perfis">
+                <div class="settings-section">
+                <h3 class="settings-section-title">Perfis de Exportação</h3>
+                
+                <div class="profiles-list" id="settings-profiles-list"></div>
+            </div>
+            </div>
+            </div> <!-- settings-content -->
+        
+                <!-- Uso de IA -->
+                <div class="settings-tab-pane" id="tab-usage">
+                    <div class="settings-section">
+                        <h3 class="settings-section-title">Uso de IA</h3>
+                        <div id="usage-panel" style="padding: 8px 0;">
+                            <p style="color: var(--text-secondary); font-size: 13px;">Carregando dados de uso...</p>
+                        </div>
+                    </div>
+                </div>
+            </div> <!-- settings-layout -->
+
+<div class="modal-footer">
+            <button class="btn btn-ghost" id="btn-settings-cancel">Cancelar</button>
+            <button class="btn btn-primary" id="btn-settings-save">Salvar Configurações</button>
+        </div>
+    </div>
+</div>
+
+<!-- Icons Initialization -->
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<script>
+    lucide.createIcons();
+    
+    // Simple demo logic for view switching
+    // In actual app, this will be handled by app.js
+    /*
+    document.getElementById('btn-select-files').addEventListener('click', () => {
+        document.getElementById('view-upload').classList.remove('active');
+        document.getElementById('view-editor').classList.add('active');
+    });
+    
+    document.getElementById('btn-settings').addEventListener('click', () => {
+        document.getElementById('modal-settings').classList.add('active');
+    });
+    document.getElementById('btn-close-settings').addEventListener('click', () => {
+        document.getElementById('modal-settings').classList.remove('active');
+    });
+    document.getElementById('btn-cancel-settings').addEventListener('click', () => {
+        document.getElementById('modal-settings').classList.remove('active');
+    });
+    */
+</script>
+
+<!-- Project Scripts -->
+<script src="js/image-processor.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/batch.js"></script>
+<script src="js/export.js"></script>
+<script src="js/settings.js"></script>
+<script src="js/app.js"></script>
+
+
+    <!-- ================= MODERN STATUS BAR (RODAPÉ) ================= -->
+    <footer class="app-statusbar" id="app-statusbar">
+        <div class="statusbar-left">
+            <span id="statusbar-icon" style="display: flex; align-items: center;">
+                <i data-lucide="check-circle-2" style="width: 13px; height: 13px; color: #10B981;"></i>
+            </span>
+            <span id="statusbar-message" style="color: #cbd5e1; font-weight: 500;">Pronto</span>
+        </div>
+
+        <div id="statusbar-progress-wrap" style="display: none; align-items: center; gap: 8px; flex: 1; max-width: 260px; margin: 0 16px;">
+            <div class="statusbar-progress-track" style="flex: 1; height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; overflow: hidden;">
+                <div id="statusbar-progress-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #8B5CF6, #3B82F6); transition: width 0.3s ease;"></div>
+            </div>
+            <span id="statusbar-progress-text" style="font-size: 10px; color: var(--text-muted); font-family: monospace;">0%</span>
+        </div>
+
+        <div class="statusbar-right">
+            <div id="statusbar-queue-info" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Itens a cadastrar (Pressione F5 para atualizar)">
+                <i data-lucide="layers" style="width: 13px; height: 13px; color: var(--primary-color);"></i>
+                <span id="statusbar-queue-count" style="font-weight: 600; color: #f1f5f9;">0 itens a cadastrar</span>
+            </div>
+            <div class="statusbar-sep"></div>
+            <div id="statusbar-sankhya-status" style="display: flex; align-items: center; gap: 6px;" title="Conexão Sankhya ativa">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: #10B981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.7); display: inline-block;"></span>
+                <span style="font-size: 11px; color: #94A3B8;">Sankhya Conectado</span>
+            </div>
+            <div class="statusbar-sep"></div>
+            <span id="statusbar-zoom" style="font-size: 11px; color: #94A3B8; font-family: monospace;">100%</span>
+        </div>
+    </footer>
+
+
+    <!-- ================= MODAL CRIAÇÃO EM LOTE ================= -->
+    <div class="modal-overlay" id="modal-batch-import" style="display: none;">
+        <div class="modal-container" style="max-width: 580px; width: 100%; border-radius: 12px; overflow: hidden; background-color: var(--surface-color); border: 1px solid var(--border-color); box-shadow: 0 16px 40px rgba(0,0,0,0.6);">
+            <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 34px; height: 34px; border-radius: 8px; background: rgba(255, 107, 53, 0.15); color: var(--primary-color); display: flex; align-items: center; justify-content: center;">
+                        <i data-lucide="layers" style="width: 18px; height: 18px;"></i>
+                    </div>
+                    <div>
+                        <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: var(--text-primary);">Criação de Páginas em Lote</h3>
+                        <p style="margin: 2px 0 0 0; font-size: 11px; color: var(--text-muted);">Cole textos ou prints de tela com os códigos dos produtos</p>
+                    </div>
+                </div>
+                <button class="btn btn-ghost btn-icon modal-close" id="btn-close-batch-import" style="cursor: pointer;">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+
+            <div style="padding: 20px; display: flex; flex-direction: column; gap: 12px;">
+                <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.4;">
+                    Cole texto livre ou <strong>dê Ctrl+V / arraste um print</strong> direto nesta caixa. O sistema lê o print via IA e preenche os códigos automaticamente.
+                </div>
+
+                <textarea id="batch-import-textarea" class="form-control" rows="8" placeholder="Cole qualquer texto ou dê Ctrl+V / solte o print de tela aqui...&#10;&#10;Exemplos válidos:&#10;45244&#10;45249, 45256&#10;Item 45245 - PRODUTO TESTE&#10;Ou dê Ctrl+V direto no print do Sankhya, Excel, WhatsApp..." style="resize: vertical; font-family: monospace; font-size: 12px; line-height: 1.5; padding: 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--border-color); border-radius: 8px; color: #fff;"></textarea>
+
+                <!-- Status discreto enquanto a IA lê o print -->
+                <div id="batch-import-ocr-loading" style="display: none; align-items: center; gap: 8px; font-size: 11px; color: #60A5FA; padding: 2px 4px;">
+                    <i data-lucide="loader-2" class="spin" style="width: 14px; height: 14px; animation: spin 1s linear infinite; flex-shrink: 0;"></i>
+                    <span>Lendo print com Inteligência Artificial e extraindo códigos...</span>
+                </div>
+
+                <!-- Box de Prévia dos Códigos Detectados -->
+                <div id="batch-import-preview-box" style="display: none; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span id="batch-import-count" style="font-size: 12px; font-weight: 600; color: #10B981;">0 códigos detectados</span>
+                        <span id="batch-import-duplicates" style="font-size: 10px; color: var(--text-muted);"></span>
+                    </div>
+                    <div id="batch-import-chips" style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 90px; overflow-y: auto; padding-right: 4px;">
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="padding: 14px 20px; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.2);">
+                <button class="btn btn-ghost btn-sm" id="btn-clear-batch-import" style="font-size: 12px;">Limpar</button>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-secondary btn-sm" id="btn-cancel-batch-import" style="font-size: 12px;">Cancelar</button>
+                    <button class="btn btn-primary btn-sm" id="btn-execute-batch-import" disabled style="font-size: 12px; font-weight: 600; padding: 8px 18px; background: linear-gradient(90deg, #8B5CF6, #3B82F6); border: none; cursor: pointer;">
+                        <i data-lucide="sparkles" style="width: 14px; height: 14px;"></i>
+                        <span id="btn-execute-batch-label">Criar Páginas</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+
+
