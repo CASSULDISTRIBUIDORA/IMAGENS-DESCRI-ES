@@ -58,6 +58,12 @@
                         <button class="menu-dropdown-item" id="menu-ver-original"><i data-lucide="eye"></i> Ver Original <span class="shortcut">Espaço</span></button>
                     </div>
                 </div>
+                <div class="menu-item" id="menu-ajuda">
+                    <span>Ajuda</span>
+                    <div class="menu-dropdown">
+                        <button class="menu-dropdown-item" id="menu-abrir-manual"><i data-lucide="book-open"></i> Manual do Sistema</button>
+                    </div>
+                </div>
             </nav>
         </div>
         <div class="titlebar-right">
@@ -77,13 +83,14 @@
         </div>
     </header>
 
+    <!-- Update Notification (global, visível em qualquer tela) -->
+    <div class="update-notification" id="update-notification" style="display: none;">
+        <i data-lucide="info" class="text-info"></i>
+        <span>Nova atualização disponível!</span>
+    </div>
+
     <!-- ================= VIEW 1: UPLOAD ================= -->
     <div id="view-upload" class="view view-upload">
-        <!-- Update Notification (Demo) -->
-        <div class="update-notification" id="update-notification" style="display: none;">
-            <i data-lucide="info" class="text-info"></i>
-            <span>Nova atualização disponível!</span>
-        </div>
 
         <div class="upload-area" id="upload-dropzone">
             <div class="upload-icon-container">
@@ -279,6 +286,13 @@
                                 <i data-lucide="eraser" style="width:10px;height:10px;"></i> Apagar Seleção
                             </button>
                         </div>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button class="btn btn-primary btn-sm btn-ai-action" id="btn-remove-bg-manual"
+                                style="width: 100%; font-size: 11px; padding: 6px 8px; display: flex; align-items: center; justify-content: center; gap: 6px;"
+                                title="Remover fundo da imagem atual (detecção inteligente)">
+                            <i data-lucide="scissors" style="width:13px;height:13px;"></i> Remover Fundo
+                        </button>
                     </div>
                 </div>
 

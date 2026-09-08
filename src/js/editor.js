@@ -163,6 +163,10 @@ class Editor {
     } else if (savedActiveId) {
       this.setActivePage(savedActiveId);
     }
+
+    if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+      window.app.updateStatusBarQueueCount();
+    }
   }
 
   getNextId() {
@@ -212,6 +216,9 @@ class Editor {
     }
     
     this._debouncedLucide();
+    if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+      window.app.updateStatusBarQueueCount();
+    }
     
     return pageId;
   }
@@ -251,6 +258,9 @@ class Editor {
     }
     
     this._debouncedLucide();
+    if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+      window.app.updateStatusBarQueueCount();
+    }
     
     return pageId;
   }
@@ -657,6 +667,9 @@ class Editor {
 
     document.body.classList.toggle('has-multiple-pages', this.pages.length > 1);
     this.triggerAutosave(true);
+    if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+      window.app.updateStatusBarQueueCount();
+    }
     console.log(`[Editor] Produto ${cleanSku} removido da tela e DOM perfeitamente ajustado sem buracos.`);
   }
 
@@ -683,6 +696,9 @@ class Editor {
     }
     document.body.classList.toggle('has-multiple-pages', this.pages.length > 1);
     this.triggerAutosave(true);
+    if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+      window.app.updateStatusBarQueueCount();
+    }
   }
   
   movePage(pageId, direction) {
@@ -1085,6 +1101,9 @@ class Editor {
       clearTimeout(this._autosaveTimer);
       this._autosaveTimer = null;
     }
+    if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+      window.app.updateStatusBarQueueCount();
+    }
     if (immediate) {
       this._doSaveToLocal();
     } else {
@@ -1343,6 +1362,10 @@ class Editor {
         });
       }, 500);
 
+      if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+        window.app.updateStatusBarQueueCount();
+      }
+
       return true;
     } catch (e) {
       console.warn('[AutoSave] Erro ao restaurar:', e.message);
@@ -1560,35 +1583,24 @@ class Editor {
     }, cancelLabel);
     
     const settings = window._settingsManager?.settings;
-    const hasGeminiKey = !!settings.geminiApiKey;
-    const hasRemoveBgKey = !!settings.removeBgApiKey;
+    const hasRemoveBgKey = !!settings?.removeBgApiKey;
     
     try {
       let result;
       
-      if (hasGeminiKey) {
-        try {
-          result = await window.api.image.removeBgChroma({
-            base64Data: page.currentImage.src,
-            apiKey: settings.geminiApiKey
-          });
-        } catch (chromaErr) {
-          console.warn('Chroma Key falhou:', chromaErr);
-          if (hasRemoveBgKey) {
-            this.showPageOverlay(page.id, 'Tentando remove.bg', 'Fallback ativado');
-            result = await window.api.image.removeBg(page.currentImage.src);
-          } else {
-            throw chromaErr;
-          }
+      try {
+        result = await window.api.image.removeBgChroma({
+          base64Data: page.currentImage.src,
+          apiKey: settings?.geminiApiKey || ''
+        });
+      } catch (chromaErr) {
+        console.warn('Remoção local falhou:', chromaErr);
+        if (hasRemoveBgKey) {
+          this.showPageOverlay(page.id, 'Tentando remove.bg', 'Fallback ativado');
+          result = await window.api.image.removeBg(page.currentImage.src);
+        } else {
+          throw chromaErr;
         }
-      } else if (hasRemoveBgKey) {
-        this.showPageOverlay(page.id, 'Removendo fundo', 'Via remove.bg');
-        result = await window.api.image.removeBg(page.currentImage.src);
-      } else {
-        page._isProcessing = false;
-        this.hidePageOverlay(page.id);
-        if (window.app) window.app.showToast('Configure a API Key do Gemini ou remove.bg nas configura??es', 'error');
-        return;
       }
       
       if (page._abortOperation) {
@@ -1912,6 +1924,9 @@ class Editor {
         if (marca) page.brand = marca;
         page._freshSankhyaLoaded = true;
         this.updatePageHeader(page);
+        if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+          window.app.updateStatusBarQueueCount();
+        }
         this.syncSidebarDescription();
         if (caracteristicas) {
           if (window.app) window.app.showToast('Produto encontrado!', 'success');
@@ -1979,6 +1994,9 @@ class Editor {
         if (marca) page.brand = marca;
         page._freshSankhyaLoaded = true;
         this.updatePageHeader(page);
+        if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
+          window.app.updateStatusBarQueueCount();
+        }
         
         // Sincroniza a barra lateral se esta for a página atualmente selecionada
         const activeMain = this.getActiveMainPage();

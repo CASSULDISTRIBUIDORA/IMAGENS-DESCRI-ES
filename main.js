@@ -31,27 +31,55 @@ app.on('second-instance', (event, commandLine, workingDirectory) => {
 let mainWindow;
 let tray = null;
 
-// Configurações padrão conforme especificado
+// Log global do sistema
+const logFile = path.join(app.getPath('userData'), 'debug.log');
+
+// Configurações padrão conforme especificado para ambiente de produção da empresa
 const DEFAULT_SETTINGS = {
   profiles: [
     {
-      name: 'Sankhya ERP',
-      format: 'jpg',
+      name: "Sankhya ERP",
+      format: "jpg",
       width: 300,
       height: 300,
       quality: 90,
-      background: '#FFFFFF',
-      outputDir: '\\\\192.168.10.23\\Marketing_Operacional\\01 CASSUL DISTRIBUIDORA\\SANKHYA\\IMAGENS SANKHYA'
+      background: "#FFFFFF",
+      outputDir: "\\\\192.168.10.23\\Marketing_Operacional\\01 CASSUL DISTRIBUIDORA\\SANKHYA\\IMAGENS SANKHYA",
+      active: true
     },
     {
-      name: 'Tablóide/Catálogo/Site',
-      format: 'png',
-      width: 600,
-      height: 600,
+      name: "Tablóide/Catálogo/Site",
+      format: "png",
+      width: 1000,
+      height: 1000,
       quality: 100,
-      background: 'transparent',
-      outputDir: '\\\\192.168.10.23\\Marketing_Operacional\\01 CASSUL DISTRIBUIDORA\\IMPRESSOS\\TABLÓIDES\\IMAGENS TABLOIDES'
+      background: "transparent",
+      outputDir: "\\\\192.168.10.23\\Marketing_Operacional\\01 CASSUL DISTRIBUIDORA\\IMPRESSOS\\TABLÓIDES\\IMAGENS TABLOIDES",
+      active: true
     }
+  ],
+  parallelProcessing: 4,
+  removeBgApiKey: "",
+  sankhyaSecret: "hQ4IljPduWLCj9pDNdzfPppkbx8X1O0O",
+  sankhyaToken: "6d08d761-8a17-4af9-9662-207f0959948a",
+  sankhyaQuery: "SELECT\np.CODPROD AS CODIGO\n, p.DESCRPROD AS NOME \n, m.descricao AS MARCA\n, p.CARACTERISTICAS \n, d2.DESCRGRUPOPROD GRUPO_NIVEL2\n, d3.DESCRGRUPOPROD GRUPO_NIVEL3\n, d4.DESCRGRUPOPROD GRUPO_NIVEL4\n, p.AD_CATEGORIAPRODUTO \nFROM tgfpro p\nJOIN TGFMAR m ON m.codigo = p.CODMARCA \nLEFT JOIN TGFGRU d4 ON d4.CODGRUPOPROD = p.CODGRUPOPROD \nLEFT JOIN TGFGRU d3 on (d4.codgrupai=d3.codgrupoprod)\nLEFT JOIN TGFGRU d2 on (d3.codgrupai=d2.codgrupoprod)\nLEFT JOIN TGFGRU d1 on (d2.codgrupai=d1.codgrupoprod)\nWHERE p.CODPROD = {SKU}",
+  geminiApiKey: "AIzaSyBx4nUdur6hRJYYjqqIdM20SBA5deJ8mvU",
+  geminiPrompt: "PADRÃO DE GERAÇÃO DE DESCRIÇÕES - PRODUTOS SANKHYA\n\n1. FORMATO DE SAÍDA\n- A descrição final deve ser sempre gerada dentro de um bloco de texto limpo (code block) mas com toda a acentuação e pontuação da língua portuguesa perfeitamente preservadas, utilizando exclusivamente a marcação de código pura de texto simples (plaintext).\n- Não utilizar formatações ricas em Markdown (como negritos ou itálicos) dentro do bloco de texto final.\n\n2. ESTRUTURA DE TÓPICOS INTELIGENTE (ADAPTATIVA)\nO sistema deve identificar a natureza do produto antes de nomear os tópicos. O texto deve ser dividido nas seções abaixo (em LETRAS MAIÚSCULAS), omitindo e adaptando o que não fizer sentido:\n- TÍTULO DO PRODUTO (Nome isolado na primeira linha)\n- Parágrafo Introdutório: Texto corrido resumindo o que é o produto e seu benefício principal (máximo de 2 a 3 linhas).\n- PRINCIPAIS INDICAÇÕES, BENEFÍCIOS E ESPECIFICAÇÕES (Para medicamentos/químicos) OU PRINCIPAIS CARACTERÍSTICAS E BENEFÍCIOS (Para roupas, EPIs e objetos): Lista em tópicos (-). Agrupe marca, cor ou voltagem aqui.\n- FÓRMULA E COMPOSIÇÃO (Para medicamentos/nutrição, realizando a transcrição exata) OU MATERIAL E COMPOSIÇÃO (Para vestuário/ferramentas).\n- MODO DE USAR E POSOLOGIA (Para medicamentos) OU INSTRUÇÕES DE USO / CUIDADOS (Para roupas, equipamentos e limpeza).\n- PERÍODOS DE CARÊNCIA: Lista indicando prazos de descarte. (EXCLUSIVO para produtos veterinários/agrícolas).\n- APRESENTAÇÃO (REGRA DE OURO): ÚLTIMA informação do texto. Detalhe EXCLUSIVAMENTE AQUI os volumes, tamanhos (P, M, G, numerações) e tipos de embalagem.\n\n3. TOM, ESTILO E REGRA ANTI-REPETIÇÃO\n- Linguagem técnica, profissional, clara e objetiva.\n- Regra de Informação Única: NENHUMA característica técnica deve aparecer em mais de um tópico.\n  * Tamanhos, pesos e volumes vão APENAS para a \"Apresentação\".\n  * Espécies-alvo ou público-alvo vão APENAS para as \"Indicações\".\n  * Marca e cor vão APENAS para as \"Especificações\".\n- Eliminar jargões comerciais vazios (ex: \"feito com alta qualidade\", \"design incrível\") e informações óbvias que não agregam valor técnico.\n\n4. CAUTELA JURÍDICA\n- Proibido o uso de termos hiperbólicos ou adjetivos extremos (ex: \"ultra eficiente\", \"cura garantida\").\n- Substituir promessas terapêuticas absolutas por termos seguros (ex: trocar \"evita\" ou \"cura\" por \"auxilia no tratamento de\"). Fidelidade estrita à bula.\n\n5. REGRA DE LIMITE DE CARACTERES E FORMATAÇÃO\n- O texto final gerado DEVE possuir no máximo 3.500 caracteres (incluindo espaços e quebras de linha).\n- Os pontinhos de preenchimento (e.g. .............) na seção \"FÓRMULA E COMPOSIÇÃO\" são OBRIGATÓRIOS apenas para medicamentos e químicos. Não utilizar para roupas e equipamentos.\n- Sintetizar listas e mesclar informações afins de forma compacta e direta.",
+  sankhyaEnvironment: "production",
+  sankhyaClientId: "8897fb53-3515-443d-a0b0-78a0af796756",
+  sankhyaQueueEnabled: true,
+  sankhyaQueueInterval: "5",
+  sankhyaQueueQuery: "SELECT \nCASE WHEN AD_STATUS LIKE 'P' THEN 'Pendente'\n     WHEN ad_status LIKE 'VC' THEN 'Validado pelo Comercial'\n     WHEN ad_status LIKE 'VF' THEN 'Validado pelo Financeiro'\n     WHEN ad_status LIKE 'VL' THEN 'Validado pela Logística'\n     WHEN ad_status LIKE 'VM' THEN 'Validado pelo Marketing'\n     ELSE 'Concluído' END STATUS,\ncodprod, DESCRPROD, AD_DESCRPRODSITE, IMAGEM, ad_status, tgfpro.* \nFROM tgfpro \nWHERE AD_STATUS = 'VL'",
+  sankhyaQueueField: "AD_STATUS",
+  sankhyaQueueValue: "VM",
+  sankhyaFtpHost: "192.168.10.138",
+  sankhyaFtpUser: "mgeweb",
+  sankhyaFtpPassword: "5nkca55ul",
+  sankhyaFtpPath: "/home/mgeweb/repositorio/imagem/imagensprodutos",
+  excludedGroups: [
+    300000000,
+    113000000,
+    601000000
   ]
 };
 
@@ -121,13 +149,22 @@ function loadSettings() {
   if (fs.existsSync(settingsPath)) {
     try {
       const data = fs.readFileSync(settingsPath, 'utf8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      return { ...DEFAULT_SETTINGS, ...parsed };
     } catch (error) {
       console.error('Erro ao ler settings:', error);
-      return DEFAULT_SETTINGS;
+      return { ...DEFAULT_SETTINGS };
     }
   }
-  return DEFAULT_SETTINGS;
+  // Primeira execução em máquina nova: persiste o DEFAULT_SETTINGS completo
+  try {
+    const dir = path.dirname(settingsPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(DEFAULT_SETTINGS, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Erro ao inicializar settings.json:', err);
+  }
+  return { ...DEFAULT_SETTINGS };
 }
 
 // Salva configurações
@@ -357,6 +394,27 @@ ipcMain.handle('shell:openExternal', async (event, url) => {
   return false;
 });
 
+// IPC Handler - Abrir Manual do Sistema no navegador padrão
+ipcMain.handle('app:openManual', async () => {
+  try {
+    const candidates = [
+      path.join(__dirname, 'MANUAL_DO_SISTEMA.html'),
+      path.join(__dirname, 'src', 'manual.html'),
+      process.resourcesPath ? path.join(process.resourcesPath, 'MANUAL_DO_SISTEMA.html') : null
+    ].filter(Boolean);
+
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        await shell.openPath(p);
+        return true;
+      }
+    }
+  } catch (err) {
+    console.error('Erro ao abrir manual do sistema:', err);
+  }
+  return false;
+});
+
 // IPC Handler - Baixar imagem de URL (para drag & drop do navegador)
 ipcMain.handle('files:downloadFromUrl', async (event, url) => {
   try {
@@ -412,8 +470,6 @@ ipcMain.handle('files:downloadFromUrl', async (event, url) => {
   }
 });
 
-// Log global
-const logFile = path.join(app.getPath('userData'), 'debug.log');
 
 // IPC Handler - Remover fundo de imagem (usando remove.bg API)
 ipcMain.handle('image:removeBg', async (event, base64Data) => {
@@ -542,96 +598,186 @@ ipcMain.handle('image:removeBg', async (event, base64Data) => {
 });
 
 // ============================================================
-// rembg - Processo Python persistente para remoção de fundo
+// rembg - Processo Python persistente para remoção de fundo (opcional com fallback @imgly)
 // ============================================================
 let rembgProcess = null;
 let rembgReady = false;
 let rembgPendingResolve = null;
 let rembgBuffer = '';
+let pythonChecked = false;
+let pythonAvailable = false;
+let imglyModule = null;
+
+function getImglyPublicPath() {
+  const { pathToFileURL } = require('url');
+  let distPath = path.join(__dirname, 'node_modules', '@imgly', 'background-removal-node', 'dist');
+  
+  if (app.isPackaged) {
+    const unpackedPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@imgly', 'background-removal-node', 'dist');
+    if (fs.existsSync(unpackedPath)) {
+      distPath = unpackedPath;
+    }
+  }
+  
+  let fileUrl = pathToFileURL(distPath).href;
+  if (!fileUrl.endsWith('/')) fileUrl += '/';
+  return fileUrl;
+}
+
+async function removeBgWithImgly(imgBuffer) {
+  if (!imglyModule) {
+    imglyModule = require('@imgly/background-removal-node');
+  }
+  const removeBackground = imglyModule.removeBackground || imglyModule.default;
+  const publicPath = getImglyPublicPath();
+  fs.appendFileSync(logFile, `[imgly] Executando com publicPath: ${publicPath}\n`);
+  const blobIn = new Blob([imgBuffer], { type: 'image/png' });
+  const blobOut = await removeBackground(blobIn, { publicPath });
+  const ab = await blobOut.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+function isPythonAvailable() {
+  if (pythonChecked) return pythonAvailable;
+  try {
+    const { execSync } = require('child_process');
+    // Verifica rigorosamente se o Python está presente e se o módulo rembg está instalado
+    execSync('python -c "import rembg"', { stdio: 'ignore', timeout: 2500 });
+    pythonAvailable = true;
+    fs.appendFileSync(logFile, `[rembg] Python com módulo rembg detectado com sucesso.\n`);
+  } catch (e) {
+    pythonAvailable = false;
+    fs.appendFileSync(logFile, `[rembg] Python/rembg indisponível no sistema. Usando motor nativo @imgly.\n`);
+  }
+  pythonChecked = true;
+  return pythonAvailable;
+}
 
 function startRembgProcess() {
   if (rembgProcess) return;
+  if (!isPythonAvailable()) {
+    fs.appendFileSync(logFile, `[rembg] Python não detectado nesta máquina. Usando motor nativo @imgly.\n`);
+    return;
+  }
   
   let scriptPath = path.join(process.resourcesPath, 'scripts', 'remove_bg.py');
   if (!fs.existsSync(scriptPath)) {
     scriptPath = path.join(__dirname, 'scripts', 'remove_bg.py');
   }
+  if (!fs.existsSync(scriptPath)) {
+    fs.appendFileSync(logFile, `[rembg] Script remove_bg.py não encontrado.\n`);
+    return;
+  }
+
   const { spawn } = require('child_process');
+  fs.appendFileSync(logFile, `[rembg] Iniciando processo: ${scriptPath}\n`);
   
-  fs.appendFileSync(logFile, `[rembg] Iniciando processo persistente: ${scriptPath}\n`);
-  
-  rembgProcess = spawn('python', [scriptPath], {
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  
-  rembgProcess.stdout.on('data', (data) => {
-    rembgBuffer += data.toString();
-    const lines = rembgBuffer.split('\n');
-    rembgBuffer = lines.pop(); // Guardar linha incompleta
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+  try {
+    rembgProcess = spawn('python', [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    if (rembgProcess.stdin) {
+      rembgProcess.stdin.on('error', (err) => {
+        fs.appendFileSync(logFile, `[rembg] stdin erro capturado: ${err.message}\n`);
+      });
+    }
+
+    rembgProcess.on('error', (err) => {
+      fs.appendFileSync(logFile, `[rembg] Erro no spawn do Python: ${err.message}\n`);
+      rembgProcess = null;
+      rembgReady = false;
+      if (rembgPendingResolve) {
+        rembgPendingResolve('ERROR|Python indisponível');
+        rembgPendingResolve = null;
+      }
+    });
+
+    rembgProcess.stdout.on('data', (data) => {
+      rembgBuffer += data.toString();
+      const lines = rembgBuffer.split('\n');
+      rembgBuffer = lines.pop(); // Guardar linha incompleta
       
-      fs.appendFileSync(logFile, `[rembg] stdout: ${trimmed}\n`);
-      
-      if (trimmed === 'LOADING') {
-        fs.appendFileSync(logFile, `[rembg] Carregando modelo BiRefNet...\n`);
-      } else if (trimmed === 'READY') {
-        rembgReady = true;
-        fs.appendFileSync(logFile, `[rembg] Modelo carregado! Pronto para processar.\n`);
-        if (rembgPendingResolve) {
-          rembgPendingResolve('READY');
-          rembgPendingResolve = null;
-        }
-      } else if (trimmed.startsWith('OK|') || trimmed.startsWith('ERROR|')) {
-        if (rembgPendingResolve) {
-          rembgPendingResolve(trimmed);
-          rembgPendingResolve = null;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        
+        fs.appendFileSync(logFile, `[rembg] stdout: ${trimmed}\n`);
+        
+        if (trimmed === 'LOADING') {
+          fs.appendFileSync(logFile, `[rembg] Carregando modelo BiRefNet...\n`);
+        } else if (trimmed === 'READY') {
+          rembgReady = true;
+          fs.appendFileSync(logFile, `[rembg] Modelo carregado! Pronto para processar.\n`);
+          if (rembgPendingResolve) {
+            rembgPendingResolve('READY');
+            rembgPendingResolve = null;
+          }
+        } else if (trimmed.startsWith('OK|') || trimmed.startsWith('ERROR|')) {
+          if (rembgPendingResolve) {
+            rembgPendingResolve(trimmed);
+            rembgPendingResolve = null;
+          }
         }
       }
-    }
-  });
-  
-  rembgProcess.stderr.on('data', (data) => {
-    fs.appendFileSync(logFile, `[rembg] stderr: ${data.toString().substring(0, 200)}\n`);
-  });
-  
-  rembgProcess.on('close', (code) => {
-    fs.appendFileSync(logFile, `[rembg] Processo encerrado (code ${code})\n`);
+    });
+    
+    rembgProcess.stderr.on('data', (data) => {
+      fs.appendFileSync(logFile, `[rembg] stderr: ${data.toString().substring(0, 200)}\n`);
+    });
+    
+    rembgProcess.on('close', (code) => {
+      fs.appendFileSync(logFile, `[rembg] Processo encerrado (code ${code})\n`);
+      rembgProcess = null;
+      rembgReady = false;
+      if (rembgPendingResolve) {
+        rembgPendingResolve('ERROR|Processo encerrado');
+        rembgPendingResolve = null;
+      }
+    });
+  } catch (err) {
+    fs.appendFileSync(logFile, `[rembg] Exceção ao iniciar Python: ${err.message}\n`);
     rembgProcess = null;
     rembgReady = false;
-    if (rembgPendingResolve) {
-      rembgPendingResolve('ERROR|Processo encerrado inesperadamente');
-      rembgPendingResolve = null;
-    }
-  });
+  }
 }
 
 function sendToRembg(command) {
   return new Promise((resolve, reject) => {
-    if (!rembgProcess) {
-      reject(new Error('Processo rembg não iniciado'));
+    if (!rembgProcess || !rembgProcess.stdin || !rembgProcess.stdin.writable) {
+      reject(new Error('Processo rembg não iniciado ou stdin fechado'));
       return;
     }
     rembgPendingResolve = resolve;
-    rembgProcess.stdin.write(command + '\n');
+    try {
+      rembgProcess.stdin.write(command + '\n');
+    } catch (err) {
+      rembgPendingResolve = null;
+      reject(err);
+      return;
+    }
     
-    // Timeout de 120 segundos
+    // Timeout de 20 segundos
     setTimeout(() => {
       if (rembgPendingResolve === resolve) {
         rembgPendingResolve = null;
-        reject(new Error('Timeout ao processar imagem'));
+        reject(new Error('Timeout ao processar imagem via Python'));
       }
-    }, 120000);
+    }, 20000);
   });
 }
 
-function waitForRembgReady() {
+function waitForRembgReady(timeoutMs = 4000) {
   return new Promise((resolve) => {
-    if (rembgReady) { resolve(); return; }
+    if (rembgReady) { resolve('READY'); return; }
+    const timer = setTimeout(() => {
+      resolve('TIMEOUT');
+    }, timeoutMs);
+    const prev = rembgPendingResolve;
     rembgPendingResolve = (msg) => {
-      if (msg === 'READY') resolve();
+      clearTimeout(timer);
+      if (prev) prev(msg);
+      resolve(msg);
     };
   });
 }
@@ -967,52 +1113,81 @@ ipcMain.handle('image:removeWhiteBg', async (event, base64Data) => {
 });
 
 ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey }) => {
-  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] Iniciando remoção de fundo via rembg (BiRefNet)...\n`);
+  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] Iniciando remoção de fundo (rembg / @imgly)...\n`);
   
   try {
-    // Iniciar processo se não estiver rodando
-    if (!rembgProcess) {
-      startRembgProcess();
-      fs.appendFileSync(logFile, `[rembg] Aguardando modelo carregar (primeira vez)...\n`);
-      await waitForRembgReady();
-    }
-    
     const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
     const imgBuffer = Buffer.from(rawBase64, 'base64');
     
-    const tempDir = path.join(app.getPath('temp'), 'multipic-rembg');
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    let processedBuffer = null;
+    let elapsed = 0;
     
-    const ts = Date.now();
-    const inputPath = path.join(tempDir, `input_${ts}.png`);
-    const outputPath = path.join(tempDir, `output_${ts}.png`);
-    
-    await sharp(imgBuffer).rotate().png().toFile(inputPath);
-    
-    fs.appendFileSync(logFile, `[rembg] Enviando para processamento...\n`);
-    const startTime = Date.now();
-    
-    // Enviar comando ao processo persistente
-    const result = await sendToRembg(`${inputPath}|${outputPath}`);
-    
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    fs.appendFileSync(logFile, `[rembg] Resultado em ${elapsed}s: ${result}\n`);
-    
-    // Limpar input
-    try { fs.unlinkSync(inputPath); } catch {}
-    
-    if (result.startsWith('ERROR|')) {
-      throw new Error(result.substring(6));
+    // 1. Tentar Python (rembg BiRefNet) se e somente se Python e rembg estiverem confirmados
+    if (isPythonAvailable()) {
+      try {
+        if (!rembgProcess) {
+          startRembgProcess();
+          fs.appendFileSync(logFile, `[rembg] Aguardando modelo carregar (primeira vez)...\n`);
+          await waitForRembgReady();
+        }
+        
+        if (rembgProcess && rembgReady) {
+          const tempDir = path.join(app.getPath('temp'), 'multipic-rembg');
+          if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+          
+          const ts = Date.now();
+          const inputPath = path.join(tempDir, `input_${ts}.png`);
+          const outputPath = path.join(tempDir, `output_${ts}.png`);
+          
+          await sharp(imgBuffer).rotate().png().toFile(inputPath);
+          fs.appendFileSync(logFile, `[rembg] Enviando para processamento Python...\n`);
+          const startTime = Date.now();
+          
+          const result = await sendToRembg(`${inputPath}|${outputPath}`);
+          elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          fs.appendFileSync(logFile, `[rembg] Resultado Python em ${elapsed}s: ${result}\n`);
+          
+          try { fs.unlinkSync(inputPath); } catch {}
+          
+          if (!result.startsWith('ERROR|') && fs.existsSync(outputPath)) {
+            processedBuffer = fs.readFileSync(outputPath);
+            try { fs.unlinkSync(outputPath); } catch {}
+          }
+        }
+      } catch (pythonErr) {
+        fs.appendFileSync(logFile, `[rembg] Falha no motor Python (${pythonErr.message}), caindo para motor nativo @imgly.\n`);
+      }
     }
     
-    if (!fs.existsSync(outputPath)) {
-      throw new Error('rembg não gerou o arquivo de saída');
+    // 2. Fallback nativo: @imgly/background-removal-node (Node.js/ONNX) sem depender de Python
+    if (!processedBuffer) {
+      fs.appendFileSync(logFile, `[rembg] Processando via motor nativo @imgly (ONNX)...\n`);
+      const startTime = Date.now();
+      try {
+        const pngInput = await sharp(imgBuffer).rotate().png().toBuffer();
+        processedBuffer = await removeBgWithImgly(pngInput);
+        elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        fs.appendFileSync(logFile, `[rembg] Motor nativo @imgly concluído em ${elapsed}s!\n`);
+      } catch (imglyErr) {
+        fs.appendFileSync(logFile, `[rembg] Motor @imgly falhou (${imglyErr.message}), tentando recorte Sharp...\n`);
+      }
+    }
+    
+    // 3. Fallback final garantido: remoção de fundo branco com Sharp puro (zero dependência)
+    if (!processedBuffer) {
+      fs.appendFileSync(logFile, `[rembg] Usando fallback Sharp removeWhiteBackgroundBuffer...\n`);
+      try {
+        processedBuffer = await removeWhiteBackgroundBuffer(imgBuffer);
+      } catch (sharpErr) {
+        fs.appendFileSync(logFile, `[rembg] Recorte Sharp falhou: ${sharpErr.message}\n`);
+      }
+    }
+    
+    if (!processedBuffer) {
+      throw new Error('Não foi possível remover o fundo da imagem.');
     }
     
     // Trim + centralização quadrada (via Sharp)
-    const processedBuffer = fs.readFileSync(outputPath);
-    try { fs.unlinkSync(outputPath); } catch {}
-    
     const trimmedBuffer = await sharp(processedBuffer)
       .trim()
       .png()
@@ -1044,7 +1219,7 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey }) => 
     
     const resultBase64 = squareBuffer.toString('base64');
     
-    fs.appendFileSync(logFile, `[rembg] Concluído em ${elapsed}s! Trimmed: ${tw}x${th}, Square: ${squareSize}x${squareSize}\n`);
+    fs.appendFileSync(logFile, `[rembg] Concluído com sucesso em ${elapsed}s! Trimmed: ${tw}x${th}, Square: ${squareSize}x${squareSize}\n`);
     
     return {
       base64: `data:image/png;base64,${resultBase64}`,

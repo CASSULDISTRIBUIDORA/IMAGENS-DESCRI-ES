@@ -3,10 +3,15 @@
   "version": "1.0.0",
   "description": "MultiPic — Centralizador e Editor de Imagens Multi-Formato",
   "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CASSULDISTRIBUIDORA/IMAGENS-DESCRI-ES.git"
+  },
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win",
-    "build:dir": "electron-builder --win --dir"
+    "build:dir": "electron-builder --win --dir",
+    "publish": "electron-builder --win --publish always"
   },
   "author": "CASSUL",
   "license": "UNLICENSED",
@@ -35,14 +40,18 @@
       "icon": "build/icon.png"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
     },
     "publish": [
       {
         "provider": "github",
-        "owner": "OWNER",
-        "repo": "multipic"
+        "owner": "CASSULDISTRIBUIDORA",
+        "repo": "IMAGENS-DESCRI-ES"
       }
     ],
     "extraResources": [
@@ -50,8 +59,14 @@
         "from": "scripts",
         "to": "scripts",
         "filter": [
-          "**/*"
+          "**/*",
+          "!__pycache__/**",
+          "!test_*"
         ]
+      },
+      {
+        "from": "MANUAL_DO_SISTEMA.html",
+        "to": "MANUAL_DO_SISTEMA.html"
       }
     ],
     "files": [

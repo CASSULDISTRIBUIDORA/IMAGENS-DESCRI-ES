@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('api', {
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     getAppPath: () => ipcRenderer.invoke('app:getAppPath'),
+    openManual: () => ipcRenderer.invoke('app:openManual'),
   },
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),

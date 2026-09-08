@@ -311,16 +311,33 @@ class App {
 
   updateStatusBarQueueCount() {
     setTimeout(() => {
-      const realProducts = this.editor?.pages?.filter(p => p.sku && String(p.sku).trim() !== '' && (!p.variantIndex || p.variantIndex === 0)) || [];
+      if (!this.editor || !this.editor.pages) return;
+      // Contar as páginas principais de produtos (excluindo variantes p.variantIndex > 0)
+      const mainPages = this.editor.pages.filter(p => !p.variantIndex || p.variantIndex === 0);
+      const realProducts = mainPages.filter(p => {
+        const hasSku = p.sku && String(p.sku).trim() !== '';
+        const hasImg = !!p.currentImage;
+        const hasName = p.productName && String(p.productName).trim() !== '';
+        return hasSku || hasImg || hasName;
+      });
+      const count = realProducts.length;
       const countEl = document.getElementById('statusbar-queue-count');
       if (countEl) {
-        countEl.textContent = `${realProducts.length} itens a cadastrar`;
+        countEl.textContent = `${count} ${count === 1 ? 'item a cadastrar' : 'itens a cadastrar'}`;
       }
       if (window.lucide) window.lucide.createIcons();
-    }, 200);
+    }, 150);
   }
   
   setupUI() {
+    // Clique no contador de itens a cadastrar para forçar atualização/recontagem
+    document.getElementById('statusbar-queue-info')?.addEventListener('click', () => {
+      this.updateStatusBarQueueCount();
+      const countEl = document.getElementById('statusbar-queue-count');
+      const text = countEl ? countEl.textContent : '';
+      this.showToast(`Contador atualizado: ${text}`, 'info');
+    });
+
     // Salvar síncrono antes de fechar a janela
     window.addEventListener('beforeunload', () => {
       if (this.editor) {
@@ -1131,6 +1148,11 @@ class App {
       document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
       if (this.editor) this.editor.removeBackground();
     });
+
+    // Botão "Remover Fundo" na sidebar esquerda (Pincéis IA)
+    document.getElementById('btn-remove-bg-manual')?.addEventListener('click', () => {
+      if (this.editor) this.editor.removeBackground();
+    });
     
     document.getElementById('menu-remover-fundo-objeto')?.addEventListener('click', () => {
       document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
@@ -1166,6 +1188,13 @@ class App {
       document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
       const btn = document.getElementById('btn-compare');
       if (btn) btn.click();
+    });
+
+    document.getElementById('menu-abrir-manual')?.addEventListener('click', async () => {
+      document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
+      if (window.api && window.api.app && window.api.app.openManual) {
+        await window.api.app.openManual();
+      }
     });
   }
   
@@ -1801,6 +1830,7 @@ class App {
       } else {
         this.showToast(`${updatedCount} item(ns) atualizado(s) com dados frescos do Sankhya!`, 'success');
       }
+      this.updateStatusBarQueueCount();
     } catch (e) {
       console.error('Erro ao atualizar busca Sankhya:', e);
       this.showToast('Erro ao atualizar Sankhya: ' + e.message, 'error');

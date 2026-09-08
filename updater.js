@@ -6,27 +6,33 @@ let mainWindow;
 function setupUpdater(window) {
   mainWindow = window;
 
-  autoUpdater.autoDownload = false;
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on('update-available', (info) => {
-    if (mainWindow) {
+    console.log('[AutoUpdater] Atualização disponível:', info?.version);
+    if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updater:updateAvailable', info);
     }
   });
 
   autoUpdater.on('update-downloaded', (info) => {
-    if (mainWindow) {
+    console.log('[AutoUpdater] Atualização baixada com sucesso:', info?.version);
+    if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updater:updateDownloaded', info);
     }
   });
 
   autoUpdater.on('error', (err) => {
-    console.error('Erro no auto-updater:', err);
+    console.warn('[AutoUpdater] Verificação de atualização:', err?.message || err);
   });
 
-  // Verifica atualizações ao iniciar
-  autoUpdater.checkForUpdatesAndNotify();
+  // Verifica atualizações ao iniciar de forma assíncrona segura
+  setTimeout(() => {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.warn('[AutoUpdater] Não foi possível verificar atualizações agora:', err?.message);
+    });
+  }, 3000);
 }
 
 ipcMain.handle('updater:checkForUpdates', async () => {
