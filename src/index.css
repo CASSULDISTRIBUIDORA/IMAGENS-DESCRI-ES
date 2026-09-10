@@ -2468,3 +2468,190 @@ h1, h2, h3, h4, h5, h6 {
   border-color: rgba(255, 255, 255, 0.1);
   text-decoration: line-through;
 }
+
+/* ============================================================
+   RELATÓRIO DE ITENS CONCLUÍDOS / HISTÓRICO
+   ============================================================ */
+.report-table th, 
+.report-table td {
+  padding: 10px 14px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  word-break: break-word;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.report-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.badge-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  margin: 2px 3px 2px 0;
+}
+
+.badge-change-photo {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-change-desc {
+  background: rgba(139, 92, 246, 0.15);
+  color: #A78BFA;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.badge-change-alt {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60A5FA;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.badge-change-val {
+  background: rgba(245, 158, 11, 0.15);
+  color: #FBBF24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* ============================================================
+   ESTILOS DE IMPRESSÃO (@media print)
+   ============================================================ */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 10mm;
+  }
+
+  /* Oculta toda a aplicação fora do modal de relatório */
+  body * {
+    visibility: hidden;
+  }
+
+  #modal-report-history,
+  #modal-report-history * {
+    visibility: visible;
+  }
+
+  #modal-report-history {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    background: #FFFFFF !important;
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    z-index: 999999 !important;
+  }
+
+  .report-modal-container {
+    max-width: 100% !important;
+    width: 100% !important;
+    max-height: none !important;
+    height: auto !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #FFFFFF !important;
+    color: #111827 !important;
+    border-radius: 0 !important;
+  }
+
+  /* Oculta botões de fechar, imprimir e campos de filtro na impressão */
+  .report-header-actions,
+  #report-search-input,
+  #report-search-input + i,
+  #report-month-select,
+  .report-filters-bar label,
+  .report-modal-footer,
+  .modal-close {
+    display: none !important;
+  }
+
+  .report-modal-header {
+    border-bottom: 2px solid #1E293B !important;
+    padding: 0 0 10px 0 !important;
+    margin-bottom: 12px !important;
+  }
+
+  .report-modal-header h3 {
+    color: #0F172A !important;
+    font-size: 18px !important;
+  }
+
+  .report-modal-header p {
+    color: #475569 !important;
+    font-size: 11px !important;
+  }
+
+  .report-filters-bar {
+    background: #F8FAFC !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 6px !important;
+    padding: 8px 12px !important;
+    margin-bottom: 14px !important;
+  }
+
+  .report-badge-stat {
+    border: 1px solid #CBD5E1 !important;
+    color: #0F172A !important;
+    background: #FFFFFF !important;
+  }
+
+  #report-table-wrapper {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  .report-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    color: #0F172A !important;
+    font-size: 10px !important;
+  }
+
+  .report-table thead tr {
+    background: #F1F5F9 !important;
+    border-bottom: 2px solid #94A3B8 !important;
+    color: #0F172A !important;
+  }
+
+  .report-table th {
+    color: #0F172A !important;
+    font-weight: 700 !important;
+    padding: 6px 8px !important;
+    border: 1px solid #CBD5E1 !important;
+  }
+
+  .report-table td {
+    padding: 6px 8px !important;
+    border: 1px solid #E2E8F0 !important;
+    color: #1E293B !important;
+    word-break: break-word !important;
+    white-space: normal !important;
+  }
+
+  .report-table tbody tr {
+    page-break-inside: avoid !important;
+  }
+
+  .report-table tbody tr:nth-child(even) {
+    background-color: #F8FAFC !important;
+  }
+
+  .badge-change {
+    background: #F1F5F9 !important;
+    color: #0F172A !important;
+    border: 1px solid #CBD5E1 !important;
+    font-size: 9px !important;
+  }
+}

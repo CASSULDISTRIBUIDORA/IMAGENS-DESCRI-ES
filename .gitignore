@@ -1,9 +1,11 @@
-﻿# Dependências
+# Dependências
 node_modules/
 
 # Builds e instaladores
 dist/
 dist-native/
+rembg_server.spec
+build/rembg_server/
 
 # Logs e arquivos temporários
 *.log

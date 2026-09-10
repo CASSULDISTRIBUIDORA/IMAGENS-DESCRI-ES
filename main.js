@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, nativeTheme, Menu, Notification, net, Tray, shell, clipboard, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const sharp = require('sharp');
 const { setupUpdater } = require('./updater');
 
@@ -2237,7 +2238,7 @@ async function fetchGeminiWithFallback(urlBuilder, fetchOptions, primaryKey, fal
 // ============================================================
 // IPC Handlers - Gemini (Reescrita de Texto)
 // ============================================================
-ipcMain.handle('gemini:rewrite', async (event, { text, productName, apiKey, prompt, ocrImageBase64 }) => {
+ipcMain.handle('gemini:rewrite', async (event, { text, productName, apiKey, prompt, ocrImageBase64, ocrImages }) => {
   let fullPrompt;
   const nameContext = productName ? `\n\nNOME DO PRODUTO (CONTÉM CARACTERÍSTICAS COMO TAMANHO, COR, ETC): ${productName}` : '';
   
@@ -2248,16 +2249,21 @@ ipcMain.handle('gemini:rewrite', async (event, { text, productName, apiKey, prom
     fullPrompt = prompt + '\n\nTEXTO ORIGINAL DO PRODUTO PARA REESCREVER:\n' + text + nameContext;
   }
   
-  if (ocrImageBase64) {
-    fullPrompt += '\n\nATENÇÃO: Extraia e utilize também as informações legíveis na imagem de referência anexada.';
+  // Normalizar array de imagens OCR (até 4 imagens)
+  const imageList = Array.isArray(ocrImages) && ocrImages.length > 0
+    ? ocrImages.filter(Boolean)
+    : (ocrImageBase64 ? [ocrImageBase64] : []);
+
+  if (imageList.length > 0) {
+    fullPrompt += `\n\nATENÇÃO: Foram anexadas ${imageList.length} imagem(ns) de referência (bula, rótulo, embalagem ou especificações). Extraia e utilize também todas as informações legíveis nelas.`;
   }
   
-  fs.appendFileSync(logFile, `[Gemini] Prompt final (${fullPrompt.length} chars)\n`);
+  fs.appendFileSync(logFile, `[Gemini] Prompt final (${fullPrompt.length} chars, ${imageList.length} imagens)\n`);
   
   const parts = [{ text: fullPrompt }];
-  if (ocrImageBase64) {
-    const rawBase64 = ocrImageBase64.replace(/^data:image\/\w+;base64,/, '');
-    const mimeMatch = ocrImageBase64.match(/^data:(image\/\w+);base64,/);
+  for (const img of imageList) {
+    const rawBase64 = img.replace(/^data:image\/\w+;base64,/, '');
+    const mimeMatch = img.match(/^data:(image\/\w+);base64,/);
     const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
     parts.push({
       inline_data: { mime_type: mimeType, data: rawBase64 }
@@ -3024,5 +3030,102 @@ ipcMain.handle('files:exportToProfile', async (event, args) => {
     return { success: false, error: error.message };
   }
 });
+
+// ============================================================
+// Histórico de Alterações de Produtos / Relatórios
+// ============================================================
+const historyFilePath = path.join(app.getPath('userData'), 'historico_alteracoes.json');
+
+function loadHistoryData() {
+  try {
+    if (fs.existsSync(historyFilePath)) {
+      const raw = fs.readFileSync(historyFilePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.error('[History] Erro ao carregar historico:', err);
+  }
+  return [];
+}
+
+function saveHistoryData(records) {
+  try {
+    fs.writeFileSync(historyFilePath, JSON.stringify(records, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    console.error('[History] Erro ao gravar historico:', err);
+    return false;
+  }
+}
+
+ipcMain.handle('history:add', async (event, record) => {
+  try {
+    const records = loadHistoryData();
+    const newRecord = {
+      id: Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      timestamp: Date.now(),
+      dateStr: record.dateStr || new Date().toLocaleString('pt-BR'),
+      monthYear: record.monthYear || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+      sku: String(record.sku || '').trim(),
+      productName: String(record.productName || '').trim(),
+      brand: String(record.brand || '').trim(),
+      userName: String(record.userName || '').trim() || os.userInfo().username || 'Usuário',
+      changes: record.changes || {},
+      changesSummary: String(record.changesSummary || '').trim()
+    };
+    records.unshift(newRecord); // Mais recentes primeiro
+    saveHistoryData(records);
+    return { success: true, record: newRecord };
+  } catch (err) {
+    console.error('[History] Erro em history:add:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('history:get', async (event, monthYear) => {
+  try {
+    const records = loadHistoryData();
+    if (!monthYear || monthYear === 'all') {
+      return { success: true, records };
+    }
+    const filtered = records.filter(r => r.monthYear === monthYear);
+    return { success: true, records: filtered };
+  } catch (err) {
+    return { success: false, error: err.message, records: [] };
+  }
+});
+
+ipcMain.handle('history:getMonths', async () => {
+  try {
+    const records = loadHistoryData();
+    const monthsSet = new Set();
+    const now = new Date();
+    const currentMY = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    monthsSet.add(currentMY);
+    
+    records.forEach(r => {
+      if (r.monthYear) monthsSet.add(r.monthYear);
+    });
+    const sorted = Array.from(monthsSet).sort().reverse();
+    return { success: true, months: sorted };
+  } catch (err) {
+    return { success: false, error: err.message, months: [] };
+  }
+});
+
+ipcMain.handle('history:clear', async () => {
+  saveHistoryData([]);
+  return { success: true };
+});
+
+ipcMain.handle('system:getUsername', () => {
+  try {
+    return os.userInfo().username || '';
+  } catch (e) {
+    return '';
+  }
+});
+
 
 

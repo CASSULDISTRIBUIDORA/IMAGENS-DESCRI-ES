@@ -34,6 +34,7 @@ class App {
     this.setupDragDrop();
     this.setupKeyboardShortcuts();
     this.setupUpdater();
+    this.setupReportModal();
     
     // EXPORTAR TUDO — exporta todas as páginas
     document.getElementById('btn-export')?.addEventListener('click', () => {
@@ -311,20 +312,11 @@ class App {
   }
 
   updateStatusBarQueueCount() {
-    setTimeout(() => {
+    clearTimeout(this._statusCountDebounce);
+    this._statusCountDebounce = setTimeout(() => {
       if (!this.editor || !this.editor.pages) return;
-      // Contar as páginas principais de produtos (excluindo variantes p.variantIndex > 0)
-      const mainPages = this.editor.pages.filter(p => !p.variantIndex || p.variantIndex === 0);
-      const realProducts = mainPages.filter(p => {
-        const hasSku = p.sku && String(p.sku).trim() !== '';
-        const hasImg = !!p.currentImage;
-        const hasName = p.productName && String(p.productName).trim() !== '';
-        return hasSku || hasImg || hasName;
-      });
-      const count = realProducts.length;
-      const countEl = document.getElementById('statusbar-queue-count');
-      if (countEl) {
-        countEl.textContent = `${count} ${count === 1 ? 'item a cadastrar' : 'itens a cadastrar'}`;
+      if (typeof this.editor.updateTabBadge === 'function') {
+        this.editor.updateTabBadge();
       }
       if (window.lucide) window.lucide.createIcons();
     }, 150);
@@ -445,48 +437,51 @@ class App {
       });
     }
 
-    // Lógica para Imagem OCR (Isolada por Produto/Página)
+    // Lógica para Imagens de Referência OCR (Até 4 imagens por Produto/Página)
     const ocrDropzone = document.getElementById('ocr-dropzone');
-    const ocrPreview = document.getElementById('ocr-preview');
     const btnRemoveOcr = document.getElementById('btn-remove-ocr');
-    this._ocrImageBase64 = null;
 
-    const setOcrImage = (base64) => {
+    const addOcrImage = (base64) => {
       const page = this.editor?.getActiveMainPage();
-      if (page) {
-        page.ocrImageBase64 = base64;
+      if (!page) return;
+      if (!Array.isArray(page.ocrImages)) {
+        page.ocrImages = page.ocrImageBase64 ? [page.ocrImageBase64] : [];
       }
-      this._ocrImageBase64 = base64;
-      if (ocrDropzone) ocrDropzone.style.display = 'none';
-      if (ocrPreview) {
-        ocrPreview.src = base64;
-        ocrPreview.style.display = 'block';
+      if (page.ocrImages.length >= 4) {
+        this.showToast('Limite máximo de 4 imagens de referência atingido.', 'warning');
+        return;
       }
-      if (btnRemoveOcr) btnRemoveOcr.style.display = 'block';
-      this.showToast('Imagem de referência adicionada para este item!', 'success');
+      page.ocrImages.push(base64);
+      page.ocrImageBase64 = page.ocrImages[0];
+      this.editor.syncSidebarDescription();
+      this.showToast(`Imagem de referência adicionada (${page.ocrImages.length}/4)!`, 'success');
+    };
+
+    this.removeOcrImageAt = (index) => {
+      const page = this.editor?.getActiveMainPage();
+      if (!page || !Array.isArray(page.ocrImages)) return;
+      page.ocrImages.splice(index, 1);
+      page.ocrImageBase64 = page.ocrImages[0] || null;
+      this.editor.syncSidebarDescription();
     };
 
     btnRemoveOcr?.addEventListener('click', () => {
       const page = this.editor?.getActiveMainPage();
       if (page) {
+        page.ocrImages = [];
         page.ocrImageBase64 = null;
       }
-      this._ocrImageBase64 = null;
-      if (ocrDropzone) ocrDropzone.style.display = 'block';
-      if (ocrPreview) {
-        ocrPreview.src = '';
-        ocrPreview.style.display = 'none';
-      }
-      if (btnRemoveOcr) btnRemoveOcr.style.display = 'none';
+      this.editor.syncSidebarDescription();
+      this.showToast('Imagens de referência removidas.', 'info');
     });
 
     // ATALHO: Clicar na caixa de referência cola automaticamente a imagem do Clipboard
     ocrDropzone?.addEventListener('click', async () => {
-      // 1. Tentar ler do Electron nativo (sem restrições de permissão)
+      // 1. Tentar ler do Electron nativo
       if (window.api?.clipboard?.readImage) {
         const base64 = await window.api.clipboard.readImage();
         if (base64) {
-          setOcrImage(base64);
+          addOcrImage(base64);
           return;
         }
       }
@@ -499,7 +494,7 @@ class App {
             if (imageType) {
               const blob = await item.getType(imageType);
               const reader = new FileReader();
-              reader.onload = (e) => setOcrImage(e.target.result);
+              reader.onload = (e) => addOcrImage(e.target.result);
               reader.readAsDataURL(blob);
               return;
             }
@@ -511,7 +506,7 @@ class App {
 
     document.addEventListener('paste', (e) => {
       if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') {
-        // Se estiver num input de texto, não roubar o paste a menos que seja especificamente de imagem
+        // Se estiver num input de texto, não roubar o paste a menos que seja imagem
       }
       
       const items = (e.clipboardData || e.originalEvent.clipboardData).items;
@@ -519,7 +514,7 @@ class App {
         if (item.type.indexOf('image') === 0) {
           const blob = item.getAsFile();
           const reader = new FileReader();
-          reader.onload = (event) => setOcrImage(event.target.result);
+          reader.onload = (event) => addOcrImage(event.target.result);
           reader.readAsDataURL(blob);
           e.preventDefault();
           break;
@@ -532,31 +527,35 @@ class App {
     ocrDropzone?.addEventListener('drop', (e) => {
       e.preventDefault();
       ocrDropzone.style.borderColor = 'var(--border-color)';
-      const file = e.dataTransfer.files[0];
-      if (file && file.type.startsWith('image/')) {
+      const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+      files.forEach(file => {
         const reader = new FileReader();
-        reader.onload = (event) => setOcrImage(event.target.result);
+        reader.onload = (event) => addOcrImage(event.target.result);
         reader.readAsDataURL(file);
-      }
+      });
     });
 
     // Reescrever com Gemini
     const btnGerar = document.getElementById('btn-reescrever-ia');
     const divActionButtons = document.getElementById('ai-action-buttons');
 
-        const handleGerarIA = async (btnClicked) => {
+    const handleGerarIA = async (btnClicked) => {
       const targetPage = this.editor.getActiveMainPage();
       if (!targetPage || targetPage._isGenerating) return;
       const textareaOriginal = document.getElementById('textarea-descricao-original');
       const textoOriginal = textareaOriginal?.value?.trim();
-      if (!textoOriginal && !this._ocrImageBase64) { 
-        this.showToast('Busque um SKU primeiro ou anexe uma imagem de refer�ncia (Bula/R�tulo)', 'warning'); 
+      const ocrList = Array.isArray(targetPage.ocrImages) && targetPage.ocrImages.length > 0
+        ? targetPage.ocrImages
+        : (targetPage.ocrImageBase64 ? [targetPage.ocrImageBase64] : []);
+
+      if (!textoOriginal && ocrList.length === 0) { 
+        this.showToast('Busque um SKU primeiro ou anexe imagens de referência (Bula/Rótulo)', 'warning'); 
         return; 
       }
       
       const settings = this.settingsManager.settings;
       if (!settings.geminiApiKey || !settings.geminiPrompt) {
-        this.showToast('Configure Gemini nas Configura��es primeiro', 'warning');
+        this.showToast('Configure Gemini nas Configurações primeiro', 'warning');
         return;
       }
       
@@ -569,7 +568,8 @@ class App {
           productName: targetPage.productName,
           apiKey: settings.geminiApiKey,
           prompt: settings.geminiPrompt,
-          ocrImageBase64: this._ocrImageBase64 || null
+          ocrImages: ocrList,
+          ocrImageBase64: ocrList[0] || null
         });
         
         targetPage._isGenerating = false;
@@ -854,6 +854,7 @@ class App {
     }
     
     const env = settings.sankhyaEnvironment || 'sandbox';
+    const envLabel = env === 'prod' ? 'Produção' : 'Sandbox';
     const label = tipo === 'original' ? 'descrição editada' : 'descrição IA';
     // Sincronizar texto
     if (tipo === 'original') page.descriptionOriginal = texto;
@@ -877,6 +878,21 @@ class App {
         clientId: settings.sankhyaClientId
       });
       
+      try {
+        if (window.api?.history?.add) {
+          const sysUser = await window.api?.system?.getUsername?.() || '';
+          const resolvedUser = settings.sankhyaNomeUsu || (settings.sankhyaCodUsu ? `Usuário ${settings.sankhyaCodUsu}` : sysUser) || 'Usuário';
+          await window.api.history.add({
+            sku: page.sku,
+            productName: page.productName || '',
+            brand: page.brand || '',
+            userName: resolvedUser,
+            changes: { description: true },
+            changesSummary: tipo === 'original' ? 'Descrição (Manual)' : 'Descrição (IA)'
+          });
+        }
+      } catch (e) {}
+
       this.showToast(`Salvo no Sankhya com sucesso! (${envLabel})`, 'success');
     } catch (err) {
       console.error('Erro salvar Sankhya:', err);
@@ -1145,6 +1161,11 @@ class App {
       document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
       const el = document.getElementById('btn-open-settings');
       if (el) el.click();
+    });
+
+    document.getElementById('menu-relatorio-itens')?.addEventListener('click', () => {
+      document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
+      this.openReportModal();
     });
     
     document.getElementById('menu-desfazer')?.addEventListener('click', () => {
@@ -1612,7 +1633,41 @@ class App {
     }
 
     // =========================================================================
-    // 5. REMOVER DA TELA (se options.removeFromEditor for true)
+    // 5. REGISTRAR NO HISTÓRICO DE ALTERAÇÕES
+    // =========================================================================
+    try {
+      if (window.api?.history?.add) {
+        const changesList = [];
+        if (options.main && mainPage?.currentImage) changesList.push('Foto Principal');
+        if (options.alternatives && variantPages.length > 0) {
+          changesList.push(variantPages.length === 1 ? '1 Alternativa' : `${variantPages.length} Alternativas`);
+        }
+        if (descToSave) changesList.push('Descrição');
+        if (options.validate) changesList.push('Validação');
+
+        const sysUser = await window.api?.system?.getUsername?.() || '';
+        const resolvedUser = settings.sankhyaNomeUsu || (settings.sankhyaCodUsu ? `Usuário ${settings.sankhyaCodUsu}` : sysUser) || 'Usuário';
+
+        await window.api.history.add({
+          sku: cleanSku,
+          productName: mainPage?.productName || '',
+          brand: mainPage?.brand || '',
+          userName: resolvedUser,
+          changes: {
+            mainPhoto: !!(options.main && mainPage?.currentImage),
+            altPhotosCount: variantPages.length,
+            description: !!descToSave,
+            validated: !!options.validate
+          },
+          changesSummary: changesList.join(', ') || 'Atualização'
+        });
+      }
+    } catch (histErr) {
+      console.warn('[History] Falha ao registrar histórico:', histErr);
+    }
+
+    // =========================================================================
+    // 6. REMOVER DA TELA (se options.removeFromEditor for true)
     // =========================================================================
     if (options.removeFromEditor) {
       setTimeout(() => {
@@ -2091,79 +2146,148 @@ class App {
 
   async showUpscaleVariationsModal(base64, res) {
     return new Promise((resolve) => {
+      let minW = res.minW || 1000;
+      let minH = res.minH || 1000;
+      let viewMode = 'real'; // padrão 'real' (tamanho nativo 1000x1000 conforme solicitado)
+
       // Criar overlay do modal
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
-      overlay.style.cssText = 'display:flex;align-items:center;justify-content:center;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;';
+      overlay.style.cssText = 'display:flex;align-items:center;justify-content:center;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);z-index:9999;padding:10px;';
       
       const container = document.createElement('div');
-      container.style.cssText = 'background:var(--bg-secondary,#1a1a2e);border-radius:12px;padding:24px;max-width:900px;width:95%;max-height:90vh;overflow-y:auto;';
+      container.style.cssText = 'background:var(--bg-secondary,#111222);border:1px solid var(--border-color,#252640);border-radius:12px;padding:16px 20px;width:98vw;max-width:1800px;height:96vh;max-height:96vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,0.85);overflow:hidden;';
       
       // Header
       const header = document.createElement('div');
-      header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;';
-      header.innerHTML = '<h2 style="color:var(--text-primary,#fff);margin:0;font-size:18px;">Upscale IA - Escolha a melhor variação</h2>';
+      header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0;';
+      header.innerHTML = `
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h2 style="color:var(--text-primary,#fff);margin:0;font-size:17px;font-weight:700;">Upscale IA — Escolha da Variação em Alta Definição</h2>
+          <span style="background:rgba(59,130,246,0.15);color:#60A5FA;border:1px solid rgba(59,130,246,0.3);padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;">Resolução Alvo: ${minW}x${minH}px</span>
+        </div>
+      `;
       
+      const headerRight = document.createElement('div');
+      headerRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
+
+      // Botão para alternar modo de exibição: Tamanho Real vs Ajustar
+      const btnViewToggle = document.createElement('button');
+      btnViewToggle.className = 'btn btn-secondary btn-sm';
+      btnViewToggle.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;padding:5px 12px;background:#1e2038;color:#fff;border:1px solid var(--primary-color,#ff6b35);border-radius:6px;cursor:pointer;';
+      btnViewToggle.innerHTML = `🔍 Modo: <strong>Tamanho Real (${minW}x${minH}px)</strong> [Clique para Ajustar]`;
+
       const closeBtn = document.createElement('button');
       closeBtn.textContent = '✕';
-      closeBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary,#aaa);font-size:20px;cursor:pointer;padding:4px 8px;';
+      closeBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary,#aaa);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;';
       closeBtn.onclick = () => { overlay.remove(); resolve(base64); };
-      header.appendChild(closeBtn);
+
+      headerRight.appendChild(btnViewToggle);
+      headerRight.appendChild(closeBtn);
+      header.appendChild(headerRight);
       container.appendChild(header);
       
       // Info
       const info = document.createElement('p');
-      info.style.cssText = 'color:var(--text-secondary,#aaa);font-size:13px;margin-bottom:16px;';
-      info.textContent = 'Imagem atual: ' + res.width + 'x' + res.height + 'px (mínimo: ' + res.minW + 'x' + res.minH + 'px). Gerando 2 variações...';
+      info.style.cssText = 'color:var(--text-secondary,#94a3b8);font-size:12px;margin:0 0 10px 0;flex-shrink:0;';
+      info.textContent = `Imagem original: ${res.width}x${res.height}px ➜ Ampliando para ${minW}x${minH}px. Role na imagem para inspecionar os detalhes finos (textos, embalagens, rótulos).`;
       container.appendChild(info);
       
       // Grid de 2 variações
       const grid = document.createElement('div');
-      grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px;';
+      grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:14px;flex:1;min-height:0;overflow:hidden;margin-bottom:10px;';
       
       const cards = [];
       const results = [null, null];
+      const imgElements = [null, null];
+
+      const applyViewMode = () => {
+        if (viewMode === 'real') {
+          btnViewToggle.innerHTML = `🔍 Modo: <strong>Tamanho Real (${minW}x${minH}px)</strong> [Clique para Ajustar]`;
+          btnViewToggle.style.borderColor = 'var(--primary-color, #ff6b35)';
+          imgElements.forEach(img => {
+            if (img) {
+              img.style.width = `${minW}px`;
+              img.style.height = `${minH}px`;
+              img.style.minWidth = `${minW}px`;
+              img.style.minHeight = `${minH}px`;
+              img.style.maxWidth = 'none';
+              img.style.maxHeight = 'none';
+              img.style.objectFit = 'contain';
+            }
+          });
+        } else {
+          btnViewToggle.innerHTML = `⛶ Modo: <strong>Ajustar à Janela</strong> [Clique para Tamanho Real]`;
+          btnViewToggle.style.borderColor = 'var(--border-color,#252640)';
+          imgElements.forEach(img => {
+            if (img) {
+              img.style.width = '100%';
+              img.style.height = '100%';
+              img.style.minWidth = '0';
+              img.style.minHeight = '0';
+              img.style.maxWidth = '100%';
+              img.style.maxHeight = '100%';
+              img.style.objectFit = 'contain';
+            }
+          });
+        }
+      };
+
+      btnViewToggle.onclick = () => {
+        viewMode = viewMode === 'real' ? 'fit' : 'real';
+        applyViewMode();
+      };
       
       for (let i = 0; i < 2; i++) {
         const card = document.createElement('div');
-        card.style.cssText = 'border:2px solid var(--border-color,#333);border-radius:8px;overflow:hidden;cursor:pointer;transition:all 0.2s;position:relative;';
-        card.onmouseenter = () => { if (results[i]) card.style.borderColor = 'var(--accent,#ff6b35)'; };
-        card.onmouseleave = () => { if (results[i]) card.style.borderColor = 'var(--border-color,#333)'; };
+        card.style.cssText = 'border:2px solid var(--border-color,#252640);border-radius:10px;overflow:hidden;background:#090a16;display:flex;flex-direction:column;height:100%;transition:border-color 0.2s;position:relative;';
         
+        // Header do card
+        const cardHeader = document.createElement('div');
+        cardHeader.style.cssText = 'padding:8px 12px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
+        cardHeader.innerHTML = `<span style="font-weight:700;font-size:13px;color:#fff;">Variação ${i + 1}</span><span class="var-badge" style="font-size:11px;color:#94a3b8;">Gerando...</span>`;
+        card.appendChild(cardHeader);
+
+        // Container scrollável da imagem
         const imgContainer = document.createElement('div');
-        imgContainer.style.cssText = 'width:100%;aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#111;';
+        imgContainer.style.cssText = 'flex:1;min-height:0;width:100%;display:flex;align-items:center;justify-content:center;overflow:auto;background:#06070f;position:relative;padding:8px;';
         
         const spinner = document.createElement('div');
-        spinner.innerHTML = '<div style="text-align:center;"><div style="width:30px;height:30px;border:3px solid #333;border-top:3px solid var(--accent,#ff6b35);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 8px;"></div><span style="color:#888;font-size:12px;">Gerando variação ' + (i + 1) + '...</span></div>';
+        spinner.innerHTML = '<div style="text-align:center;"><div style="width:36px;height:36px;border:3px solid #252640;border-top:3px solid var(--accent,#ff6b35);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 10px;"></div><span style="color:#94a3b8;font-size:13px;font-weight:500;">Gerando variação ' + (i + 1) + ' (' + minW + 'x' + minH + 'px)...</span></div>';
         imgContainer.appendChild(spinner);
         
         card.appendChild(imgContainer);
         
-        const label = document.createElement('div');
-        label.style.cssText = 'padding:8px;text-align:center;color:var(--text-secondary,#aaa);font-size:12px;';
-        label.textContent = 'Variação ' + (i + 1);
-        card.appendChild(label);
+        // Rodapé do card com botão de seleção
+        const cardFooter = document.createElement('div');
+        cardFooter.style.cssText = 'padding:10px 14px;border-top:1px solid var(--border-color);display:flex;justify-content:center;background:rgba(0,0,0,0.3);flex-shrink:0;';
         
-        card.onclick = () => {
+        const selectBtn = document.createElement('button');
+        selectBtn.className = 'btn btn-primary btn-block';
+        selectBtn.style.cssText = 'width:100%;padding:10px;font-size:13px;font-weight:700;background:#2563EB;color:#fff;border:none;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;opacity:0.5;';
+        selectBtn.disabled = true;
+        selectBtn.innerHTML = `Aguardando Variação ${i + 1}...`;
+        
+        selectBtn.onclick = (e) => {
+          e.stopPropagation();
           if (!results[i]) return;
-          const modeRadio = document.querySelector('input[name="upscale-bg-mode"]:checked');
-          const bgMode = modeRadio ? modeRadio.value : 'auto';
           overlay.remove();
-          resolve({ base64: results[i], bgMode: bgMode, isUpscaled: true });
+          resolve({ base64: results[i], bgMode: 'auto', isUpscaled: true });
         };
+
+        cardFooter.appendChild(selectBtn);
+        card.appendChild(cardFooter);
         
         grid.appendChild(card);
-        cards.push({ card, imgContainer, label });
+        cards.push({ card, cardHeader, imgContainer, selectBtn });
       }
       
       container.appendChild(grid);
       
-      // Linha de ações com opção de remoção de fundo
+      // Rodapé geral de ações
       const actionRow = document.createElement('div');
-      actionRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:16px;flex-wrap:wrap;gap:12px;';
-
-      // (Opções de fundo removidas — o app já faz remoção de fundo eficiente via BRIA)
-
+      actionRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-shrink:0;padding-top:4px;';
+      
       const btnRow = document.createElement('div');
       btnRow.style.cssText = 'display:flex;gap:12px;align-items:center;';
       
@@ -2177,7 +2301,7 @@ class App {
       // Botão cancelar
       const cancelBtn = document.createElement('button');
       cancelBtn.textContent = 'Cancelar (usar original)';
-      cancelBtn.style.cssText = 'background:var(--bg-tertiary,#333);color:var(--text-primary,#fff);border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;';
+      cancelBtn.style.cssText = 'background:var(--bg-tertiary,#2a2b4a);color:var(--text-primary,#fff);border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;';
       cancelBtn.onclick = () => { 
         overlay.remove(); 
         resolve({ base64: base64, removeBg: false, isUpscaled: false }); 
@@ -2195,25 +2319,28 @@ class App {
       style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
       document.head.appendChild(style);
       
-      // Função para gerar 2 variações (sempre a partir da imagem ORIGINAL)
       const apiKey = this.settingsManager?.settings?.geminiApiKey;
-      let minW = res.minW || 1000;
-      let minH = res.minH || 1000;
       
       const generateVariations = () => {
-        // Ler prompt do campo de upscale se existir
         const promptInput = document.getElementById('upscale-prompt');
         const customPrompt = promptInput ? promptInput.value.trim() : '';
         
-        // Resetar cards
         for (let i = 0; i < 2; i++) {
           results[i] = null;
-          cards[i].imgContainer.innerHTML = '<div style="text-align:center;"><div style="width:30px;height:30px;border:3px solid #333;border-top:3px solid var(--accent,#ff6b35);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 8px;"></div><span style="color:#888;font-size:12px;">Gerando variação ' + (i + 1) + '...</span></div>';
-          cards[i].label.textContent = 'Variação ' + (i + 1);
-          cards[i].label.style.color = 'var(--text-secondary,#aaa)';
+          imgElements[i] = null;
+          cards[i].imgContainer.innerHTML = '<div style="text-align:center;"><div style="width:36px;height:36px;border:3px solid #252640;border-top:3px solid var(--accent,#ff6b35);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 10px;"></div><span style="color:#94a3b8;font-size:13px;font-weight:500;">Gerando variação ' + (i + 1) + ' (' + minW + 'x' + minH + 'px)...</span></div>';
+          const badgeEl = cards[i].cardHeader.querySelector('.var-badge');
+          if (badgeEl) {
+            badgeEl.textContent = 'Gerando...';
+            badgeEl.style.color = '#94a3b8';
+          }
+          cards[i].card.style.borderColor = 'var(--border-color,#252640)';
+          cards[i].selectBtn.disabled = true;
+          cards[i].selectBtn.style.opacity = '0.5';
+          cards[i].selectBtn.style.background = '#2563EB';
+          cards[i].selectBtn.innerHTML = `Aguardando Variação ${i + 1}...`;
         }
         
-        // Disparar 2 gerações SEQUENCIAIS (o tempo de resposta já evita 429)
         const runSequential = async () => {
           for (let i = 0; i < 2; i++) {
             try {
@@ -2228,22 +2355,39 @@ class App {
               results[i] = result.base64;
               
               const img = document.createElement('img');
-              img.style.cssText = 'width:100%;height:100%;object-fit:contain;';
               img.src = result.base64;
+              img.title = `Variação ${i + 1} (${minW}x${minH}px) - Clique para alternar zoom`;
+              img.style.cursor = 'zoom-in';
+              img.onclick = () => {
+                viewMode = viewMode === 'real' ? 'fit' : 'real';
+                applyViewMode();
+              };
+              imgElements[i] = img;
+              
               cards[i].imgContainer.innerHTML = '';
               cards[i].imgContainer.appendChild(img);
-              cards[i].label.textContent = 'Variação ' + (i + 1) + ' - Clique para selecionar';
-              cards[i].label.style.color = 'var(--accent,#ff6b35)';
+              applyViewMode();
+              
+              const badgeEl = cards[i].cardHeader.querySelector('.var-badge');
+              if (badgeEl) {
+                badgeEl.textContent = `${minW}x${minH}px ✓ Pronto`;
+                badgeEl.style.color = '#10B981';
+              }
+              
+              cards[i].card.style.borderColor = '#3B82F6';
+              cards[i].selectBtn.disabled = false;
+              cards[i].selectBtn.style.opacity = '1';
+              cards[i].selectBtn.style.background = 'linear-gradient(90deg, #2563EB, #1D4ED8)';
+              cards[i].selectBtn.innerHTML = `✓ Escolher Variação ${i + 1} (${minW}x${minH}px)`;
             } catch (err) {
               cards[i].imgContainer.innerHTML = '<span style="color:#f44;font-size:12px;padding:8px;">Erro: ' + err.message + '</span>';
-              cards[i].label.textContent = 'Falhou';
+              cards[i].selectBtn.innerHTML = 'Falhou';
             }
           }
         };
         runSequential();
       };
       
-      // Iniciar primeira geração
       generateVariations();
     });
   }
@@ -2427,6 +2571,194 @@ class App {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)));
     if (fill) fill.style.width = `${clamped}%`;
     if (label) label.textContent = text || `${clamped}%`;
+  }
+
+  // =========================================================================
+  // SISTEMA DE RELATÓRIOS E HISTÓRICO DE ALTERAÇÕES
+  // =========================================================================
+  setupReportModal() {
+    const modal = document.getElementById('modal-report-history');
+    const btnClose = document.getElementById('btn-close-report');
+    const btnCloseFooter = document.getElementById('btn-close-report-footer');
+    const btnPrint = document.getElementById('btn-print-report');
+    const monthSelect = document.getElementById('report-month-select');
+    const searchInput = document.getElementById('report-search-input');
+
+    if (!modal) return;
+
+    btnClose?.addEventListener('click', () => this.closeReportModal());
+    btnCloseFooter?.addEventListener('click', () => this.closeReportModal());
+    
+    // Fechar com ESC ou clicando no overlay
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) this.closeReportModal();
+    });
+
+    btnPrint?.addEventListener('click', () => {
+      window.print();
+    });
+
+    monthSelect?.addEventListener('change', () => {
+      this.loadReportData();
+    });
+
+    let searchTimeout;
+    searchInput?.addEventListener('input', () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        this.renderReportTable();
+      }, 150);
+    });
+  }
+
+  async openReportModal() {
+    const modal = document.getElementById('modal-report-history');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    const searchInput = document.getElementById('report-search-input');
+    if (searchInput) searchInput.value = '';
+    
+    await this.loadReportMonths();
+    await this.loadReportData();
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  closeReportModal() {
+    const modal = document.getElementById('modal-report-history');
+    if (modal) modal.style.display = 'none';
+  }
+
+  async loadReportMonths() {
+    const monthSelect = document.getElementById('report-month-select');
+    if (!monthSelect || !window.api?.history?.getMonths) return;
+
+    try {
+      const res = await window.api.history.getMonths();
+      const months = res?.months || [];
+      const currentVal = monthSelect.value;
+      
+      const monthNames = [
+        'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+        'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+      ];
+
+      monthSelect.innerHTML = months.map(m => {
+        const [yyyy, mm] = m.split('-');
+        const monthIndex = parseInt(mm, 10) - 1;
+        const label = monthIndex >= 0 && monthIndex < 12 
+          ? `${monthNames[monthIndex]} / ${yyyy}`
+          : m;
+        return `<option value="${m}">${label}</option>`;
+      }).join('');
+
+      if (currentVal && months.includes(currentVal)) {
+        monthSelect.value = currentVal;
+      }
+    } catch (e) {
+      console.error('[Report] Erro ao carregar meses:', e);
+    }
+  }
+
+  async loadReportData() {
+    const monthSelect = document.getElementById('report-month-select');
+    const selectedMonth = monthSelect?.value;
+    if (!selectedMonth || !window.api?.history?.get) return;
+
+    try {
+      const res = await window.api.history.get(selectedMonth);
+      this._reportRecords = res?.records || [];
+      this.renderReportTable();
+    } catch (e) {
+      console.error('[Report] Erro ao carregar dados:', e);
+      this._reportRecords = [];
+      this.renderReportTable();
+    }
+  }
+
+  renderReportTable() {
+    const tableBody = document.getElementById('report-table-body');
+    const emptyState = document.getElementById('report-empty-state');
+    const searchInput = document.getElementById('report-search-input');
+    const query = (searchInput?.value || '').trim().toLowerCase();
+
+    const records = this._reportRecords || [];
+    const filtered = records.filter(r => {
+      if (!query) return true;
+      const sku = String(r.sku || '').toLowerCase();
+      const name = String(r.productName || '').toLowerCase();
+      const brand = String(r.brand || '').toLowerCase();
+      const user = String(r.userName || '').toLowerCase();
+      return sku.includes(query) || name.includes(query) || brand.includes(query) || user.includes(query);
+    });
+
+    // Atualizar Contadores / Estatísticas do Mês
+    const totalItemsEl = document.getElementById('stat-total-items');
+    const mainPhotosEl = document.getElementById('stat-main-photos');
+    const descEl = document.getElementById('stat-descriptions');
+    const altPhotosEl = document.getElementById('stat-alt-photos');
+    const footerInfoEl = document.getElementById('report-footer-info');
+
+    const totalCount = filtered.length;
+    let mainPhotosCount = 0;
+    let descCount = 0;
+    let altPhotosCount = 0;
+
+    filtered.forEach(r => {
+      if (r.changes?.mainPhoto) mainPhotosCount++;
+      if (r.changes?.description) descCount++;
+      if (r.changes?.altPhotosCount) altPhotosCount += Number(r.changes.altPhotosCount) || 0;
+    });
+
+    if (totalItemsEl) totalItemsEl.textContent = `${totalCount} item(ns)`;
+    if (mainPhotosEl) mainPhotosEl.textContent = `${mainPhotosCount} foto(s) princ.`;
+    if (descEl) descEl.textContent = `${descCount} descrição(ões)`;
+    if (altPhotosEl) altPhotosEl.textContent = `${altPhotosCount} alternativa(s)`;
+    if (footerInfoEl) footerInfoEl.textContent = `Exibindo ${filtered.length} de ${records.length} registro(s) no mês`;
+
+    if (!tableBody) return;
+
+    if (filtered.length === 0) {
+      tableBody.innerHTML = '';
+      if (emptyState) emptyState.style.display = 'block';
+      return;
+    }
+
+    if (emptyState) emptyState.style.display = 'none';
+
+    tableBody.innerHTML = filtered.map(r => {
+      const badges = [];
+      if (r.changes?.mainPhoto) {
+        badges.push('<span class="badge-change badge-change-photo"><i data-lucide="image" style="width:10px;height:10px;"></i> Foto Principal</span>');
+      }
+      if (r.changes?.description) {
+        badges.push('<span class="badge-change badge-change-desc"><i data-lucide="sparkles" style="width:10px;height:10px;"></i> Descrição</span>');
+      }
+      if (r.changes?.altPhotosCount > 0) {
+        const count = r.changes.altPhotosCount;
+        badges.push(`<span class="badge-change badge-change-alt"><i data-lucide="images" style="width:10px;height:10px;"></i> ${count} Alternativa${count > 1 ? 's' : ''}</span>`);
+      }
+      if (r.changes?.validated) {
+        badges.push('<span class="badge-change badge-change-val"><i data-lucide="check" style="width:10px;height:10px;"></i> Validado MKT</span>');
+      }
+      if (badges.length === 0) {
+        badges.push(`<span class="badge-change" style="background:rgba(255,255,255,0.06);color:#cbd5e1;">${r.changesSummary || 'Alteração'}</span>`);
+      }
+
+      return `
+        <tr>
+          <td style="font-family: monospace; font-weight: 700; color: #60A5FA;">${r.sku || '-'}</td>
+          <td style="font-weight: 500; color: #F1F5F9; word-break: break-word;">${r.productName || '<span style="color:var(--text-muted);">(Sem nome)</span>'}</td>
+          <td style="color: #94A3B8;">${r.brand || '-'}</td>
+          <td style="color: #FBBF24; font-weight: 600;">
+            <i data-lucide="user" style="width: 12px; height: 12px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>${r.userName || 'Usuário'}
+          </td>
+          <td>${badges.join(' ')}</td>
+          <td style="color: #94A3B8; font-size: 11px; white-space: nowrap;">${r.dateStr || '-'}</td>
+        </tr>
+      `;
+    }).join('');
+
+    if (window.lucide) window.lucide.createIcons();
   }
 }
 

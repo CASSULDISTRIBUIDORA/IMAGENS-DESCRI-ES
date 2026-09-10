@@ -312,6 +312,7 @@ class Editor {
     page._imageBeforeBgRemoval = null;
     page._isUpscaled = false;
     page._upscaledImage = null;
+    page.ocrImages = [];
     page.ocrImageBase64 = null;
     
     // Resetar DOM
@@ -332,19 +333,47 @@ class Editor {
     this.syncSidebarDescription();
     this.syncRemoveBgButton();
     this.updatePageHeader(page);
+    this.updateTabBadge();
     
     if (window.app) window.app.showToast('Página limpa!', 'info');
   }
   
   updateTabBadge() {
-    const badge = document.getElementById('tab-sankhya-badge');
-    if (!badge) return;
-    const count = this.pages.filter(p => p.fromQueue).length;
-    if (count > 0) {
-      badge.textContent = count;
-      badge.style.display = 'inline-block';
-    } else {
-      badge.style.display = 'none';
+    // 1. Aba Sankhya (Fila)
+    const sankhyaBadge = document.getElementById('tab-sankhya-badge');
+    if (sankhyaBadge) {
+      const sankhyaCount = this.pages.filter(p => p.fromQueue && (!p.variantIndex || p.variantIndex === 0)).length;
+      if (sankhyaCount > 0) {
+        sankhyaBadge.textContent = sankhyaCount;
+        sankhyaBadge.style.display = 'inline-block';
+      } else {
+        sankhyaBadge.style.display = 'none';
+      }
+    }
+
+    // 2. Aba Manual (Itens a fazer)
+    const manualBadge = document.getElementById('tab-manual-badge');
+    if (manualBadge) {
+      const manualMainPages = this.pages.filter(p => !p.fromQueue && (!p.variantIndex || p.variantIndex === 0));
+      let manualCount = 0;
+      if (manualMainPages.length === 1) {
+        const p = manualMainPages[0];
+        const hasSku = p.sku && String(p.sku).trim() !== '';
+        const hasImg = !!p.currentImage;
+        const hasName = p.productName && String(p.productName).trim() !== '';
+        if (hasSku || hasImg || hasName) {
+          manualCount = 1;
+        }
+      } else if (manualMainPages.length > 1) {
+        manualCount = manualMainPages.length;
+      }
+
+      if (manualCount > 0) {
+        manualBadge.textContent = manualCount;
+        manualBadge.style.display = 'inline-block';
+      } else {
+        manualBadge.style.display = 'none';
+      }
     }
   }
 
@@ -381,6 +410,8 @@ class Editor {
       exportTabloide: true,
       variantIndex: 0,
       groupId: pageId,
+      ocrImages: [],
+      ocrImageBase64: null,
     };
     
     // Inserir na posição exata antes do grupo alvo ou no final
@@ -443,6 +474,8 @@ class Editor {
       exportTabloide: true,
       variantIndex: 0,
       groupId: pageId,
+      ocrImages: [],
+      ocrImageBase64: null,
     };
     
     this.pages.push(page);
@@ -670,6 +703,7 @@ class Editor {
       skuInput.addEventListener('input', (e) => {
         page.sku = e.target.value;
         this.syncSidebarDescription();
+        this.updateTabBadge();
         
         clearTimeout(searchTimeout);
         if (page.sku && page.sku.trim().length >= 2) {
@@ -863,6 +897,7 @@ class Editor {
     this.cleanupInsertZones();
     this.updateAllPageNumbers();
     this.filterPagesByTab();
+    this.updateTabBadge();
 
     // Ativar a próxima página de produto disponível ou a página em branco padrão
     if (this.pages.length > 0) {
@@ -1390,6 +1425,8 @@ class Editor {
           exportTabloide: page.exportTabloide,
           variantIndex: page.variantIndex || 0,
           groupId: page.groupId,
+          ocrImages: Array.isArray(page.ocrImages) ? page.ocrImages : (page.ocrImageBase64 ? [page.ocrImageBase64] : []),
+          ocrImageBase64: page.ocrImageBase64 || null,
           imageBase64
         };
       })
@@ -1534,6 +1571,8 @@ class Editor {
           exportTabloide: savedPage.exportTabloide !== undefined ? savedPage.exportTabloide : true,
           variantIndex: savedPage.variantIndex || 0,
           groupId: gId,
+          ocrImages: Array.isArray(savedPage.ocrImages) ? savedPage.ocrImages : (savedPage.ocrImageBase64 ? [savedPage.ocrImageBase64] : []),
+          ocrImageBase64: savedPage.ocrImageBase64 || (Array.isArray(savedPage.ocrImages) && savedPage.ocrImages[0]) || null,
         };
 
         this.pages.push(page);
@@ -2220,27 +2259,51 @@ class Editor {
       divActionButtons.style.display = page.description ? 'flex' : 'none';
     }
 
-    // Sincronizar imagem de referência para IA (OCR) específica desta página
+    // Sincronizar imagens de referência para IA (OCR) específicas desta página (até 4)
     const ocrDropzone = document.getElementById('ocr-dropzone');
-    const ocrPreview = document.getElementById('ocr-preview');
+    const ocrPreviewContainer = document.getElementById('ocr-preview-container');
     const btnRemoveOcr = document.getElementById('btn-remove-ocr');
-    if (page && page.ocrImageBase64) {
-      if (ocrDropzone) ocrDropzone.style.display = 'none';
-      if (ocrPreview) {
-        ocrPreview.src = page.ocrImageBase64;
-        ocrPreview.style.display = 'block';
-      }
-      if (btnRemoveOcr) btnRemoveOcr.style.display = 'block';
-      if (window.app) window.app._ocrImageBase64 = page.ocrImageBase64;
-    } else {
-      if (ocrDropzone) ocrDropzone.style.display = 'block';
-      if (ocrPreview) {
-        ocrPreview.src = '';
-        ocrPreview.style.display = 'none';
-      }
-      if (btnRemoveOcr) btnRemoveOcr.style.display = 'none';
-      if (window.app) window.app._ocrImageBase64 = null;
+
+    if (page && page.ocrImageBase64 && (!Array.isArray(page.ocrImages) || page.ocrImages.length === 0)) {
+      page.ocrImages = [page.ocrImageBase64];
     }
+    const ocrImages = (page && Array.isArray(page.ocrImages)) ? page.ocrImages : [];
+    
+    if (ocrPreviewContainer) {
+      if (ocrImages.length > 0) {
+        ocrPreviewContainer.style.display = 'grid';
+        ocrPreviewContainer.innerHTML = ocrImages.map((img, idx) => `
+          <div style="position: relative; border-radius: 4px; overflow: hidden; border: 1px solid var(--border-color); background: #000; height: 75px; display: flex; align-items: center; justify-content: center;">
+            <img src="${img}" style="max-width: 100%; max-height: 100%; object-fit: contain;" alt="Ref ${idx + 1}">
+            <button onclick="if(window.app && window.app.removeOcrImageAt) window.app.removeOcrImageAt(${idx});" title="Remover imagem ${idx + 1}" style="position: absolute; top: 2px; right: 2px; background: rgba(239, 68, 68, 0.9); color: white; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0;">
+              &times;
+            </button>
+            <span style="position: absolute; bottom: 2px; left: 2px; background: rgba(0,0,0,0.65); color: #cbd5e1; font-size: 9px; padding: 1px 4px; border-radius: 2px;">#${idx + 1}</span>
+          </div>
+        `).join('');
+      } else {
+        ocrPreviewContainer.style.display = 'none';
+        ocrPreviewContainer.innerHTML = '';
+      }
+    }
+
+    if (ocrDropzone) {
+      if (ocrImages.length >= 4) {
+        ocrDropzone.style.display = 'none';
+      } else {
+        ocrDropzone.style.display = 'block';
+        if (ocrImages.length > 0) {
+          ocrDropzone.textContent = `+ Adicionar imagem (${ocrImages.length}/4)`;
+        } else {
+          ocrDropzone.textContent = 'Clique para colar do clipboard ou solte a imagem';
+        }
+      }
+    }
+
+    if (btnRemoveOcr) {
+      btnRemoveOcr.style.display = ocrImages.length > 0 ? 'block' : 'none';
+    }
+    if (window.app) window.app._ocrImageBase64 = ocrImages[0] || null;
 
     this._debouncedLucide();
   }

@@ -135,6 +135,8 @@ class SettingsManager {
       if (queueValue) this.settings.sankhyaQueueValue = queueValue.value.trim();
       const queueCodUsu = document.getElementById('settings-sankhya-codusu');
       if (queueCodUsu) this.settings.sankhyaCodUsu = queueCodUsu.value.trim();
+      const queueNomeUsu = document.getElementById('settings-sankhya-nomeusu');
+      if (queueNomeUsu) this.settings.sankhyaNomeUsu = queueNomeUsu.value.trim();
       
       // FTP
       const ftpHost = document.getElementById('settings-sankhya-ftp-host');
@@ -336,6 +338,8 @@ class SettingsManager {
     if (queueValue) queueValue.value = this.settings.sankhyaQueueValue || '';
     const queueCodUsu = document.getElementById('settings-sankhya-codusu');
     if (queueCodUsu) queueCodUsu.value = this.settings.sankhyaCodUsu || '';
+    const queueNomeUsu = document.getElementById('settings-sankhya-nomeusu');
+    if (queueNomeUsu) queueNomeUsu.value = this.settings.sankhyaNomeUsu || '';
     
     this.renderGroupsChecklist();
     

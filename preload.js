@@ -78,5 +78,14 @@ contextBridge.exposeInMainWorld('api', {
     writeText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
     writeImage: (imageBase64) => ipcRenderer.invoke('clipboard:writeImage', imageBase64),
     readImage: () => ipcRenderer.invoke('clipboard:readImage'),
+  },
+  history: {
+    add: (record) => ipcRenderer.invoke('history:add', record),
+    get: (monthYear) => ipcRenderer.invoke('history:get', monthYear),
+    getMonths: () => ipcRenderer.invoke('history:getMonths'),
+    clear: () => ipcRenderer.invoke('history:clear')
+  },
+  system: {
+    getUsername: () => ipcRenderer.invoke('system:getUsername')
   }
 });
