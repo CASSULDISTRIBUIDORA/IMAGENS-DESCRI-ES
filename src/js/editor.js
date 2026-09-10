@@ -439,7 +439,7 @@ class Editor {
     
     if (imageData) {
       page._userImage = true;
-      this.loadImageToPage(pageId, imageData);
+      page._loadPromise = this.loadImageToPage(pageId, imageData);
     }
     
     this._debouncedLucide();
@@ -826,6 +826,16 @@ class Editor {
   
   getActivePage() { return this.pages.find(p => p.id === this.activePageId); }
   getPage(pageId) { return this.pages.find(p => p.id === pageId); }
+
+  scrollToPage(pageId) {
+    if (!pageId) return;
+    setTimeout(() => {
+      const pageEl = document.querySelector(`.page-wrapper[data-page-id="${pageId}"]`);
+      if (pageEl) {
+        pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 60);
+  }
   
 
   /**
@@ -867,7 +877,8 @@ class Editor {
       insertZone.className = 'page-insert-zone';
       insertZone.title = 'Inserir página em branco aqui';
       insertZone.addEventListener('click', () => {
-        this.createPage(null, nextGroupId);
+        const newPageId = this.createPage(null, nextGroupId);
+        this.scrollToPage(newPageId);
       });
 
       container.insertBefore(insertZone, nextGroup);
@@ -1146,7 +1157,7 @@ class Editor {
     if (!page) return;
     return new Promise((resolve) => {
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
         page.originalImage = img;
         page.currentImage = img;
         page.canvas.width = img.width;
@@ -1155,6 +1166,15 @@ class Editor {
         page.transform = { ...this.defaultTransform };
         page.history = [];
         page.historyIndex = -1;
+
+        // Detecção prévia de imagem sem fundo (PNG transparente)
+        const isTrans = (typeof imageData === 'object' && imageData.isTransparent) || await this.hasTransparency(img);
+        if (isTrans) {
+          page._hasTransparency = true;
+          page._bgRemoved = true;
+          this.syncRemoveBgButton();
+        }
+
         this.pushHistory(pageId);
         this.renderPage(pageId);
         this.syncSidebarSliders();
@@ -1173,6 +1193,10 @@ class Editor {
   
   async loadImage(imageData) {
     const pageId = this.createPage(imageData);
+    const page = this.getPage(pageId);
+    if (page && page._loadPromise) {
+      await page._loadPromise;
+    }
     return pageId;
   }
   
@@ -1669,36 +1693,71 @@ class Editor {
   
   hasTransparency(imageOrBase64) {
     return new Promise((resolve) => {
+      if (!imageOrBase64) return resolve(false);
+
+      if (typeof imageOrBase64 === 'object' && imageOrBase64.isTransparent === true) {
+        return resolve(true);
+      }
+
       const checkImage = (img) => {
         try {
+          const w = img.naturalWidth || img.width;
+          const h = img.naturalHeight || img.height;
+          if (!w || !h) return resolve(false);
+
           const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
+          canvas.width = w;
+          canvas.height = h;
           const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, w, h);
           ctx.drawImage(img, 0, 0);
-          const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+          // 1. Checar os 4 cantos primeiro (detecção instantânea de recorte PNG)
+          const cornerPositions = [
+            [0, 0],
+            [Math.max(0, w - 1), 0],
+            [0, Math.max(0, h - 1)],
+            [Math.max(0, w - 1), Math.max(0, h - 1)]
+          ];
+          let cornerTransparent = 0;
+          for (const [cx, cy] of cornerPositions) {
+            const pixel = ctx.getImageData(cx, cy, 1, 1).data;
+            if (pixel[3] < 240) cornerTransparent++;
+          }
+          if (cornerTransparent >= 2) {
+            return resolve(true);
+          }
+
+          // 2. Amostragem representativa de toda a imagem
+          const data = ctx.getImageData(0, 0, w, h).data;
           let transparentPixels = 0;
           const totalPixels = data.length / 4;
-          // Amostrar a cada 4 pixels para performance
-          for (let i = 3; i < data.length; i += 16) {
-            if (data[i] < 250) transparentPixels++;
+          const step = Math.max(1, Math.floor(totalPixels / 20000));
+          let samples = 0;
+          for (let i = 3; i < data.length; i += step * 4) {
+            samples++;
+            if (data[i] < 240) transparentPixels++;
           }
-          // Ajustar contagem pelo fator de amostragem
-          transparentPixels *= 4;
-          const ratio = transparentPixels / totalPixels;
-          resolve(ratio > 0.05); // >5% transparente = já tem fundo removido
+          const ratio = samples > 0 ? (transparentPixels / samples) : 0;
+          resolve(ratio > 0.005); // > 0.5% transparente = já é sem fundo!
         } catch (e) {
+          console.warn('Erro ao verificar transparência:', e);
           resolve(false);
         }
       };
-      
+
       if (typeof imageOrBase64 === 'string') {
         const img = new Image();
         img.onload = () => checkImage(img);
         img.onerror = () => resolve(false);
         img.src = imageOrBase64;
       } else if (imageOrBase64 instanceof HTMLImageElement) {
-        checkImage(imageOrBase64);
+        if (imageOrBase64.complete && (imageOrBase64.naturalWidth || imageOrBase64.width)) {
+          checkImage(imageOrBase64);
+        } else {
+          imageOrBase64.onload = () => checkImage(imageOrBase64);
+          imageOrBase64.onerror = () => resolve(false);
+        }
       } else {
         resolve(false);
       }
@@ -1769,6 +1828,16 @@ class Editor {
     const page = pageId ? this.getPage(pageId) : this.getActivePage();
     if (!page || !page.currentImage || page._isProcessing) return;
 
+    const isAlreadyTransparent = await this.hasTransparency(page.currentImage);
+    if (isAlreadyTransparent) {
+      page._hasTransparency = true;
+      page._bgRemoved = true;
+      this.fitAndCenterImage(page.id);
+      this.syncRemoveBgButton();
+      if (window.app) window.app.showToast('Imagem já possui fundo transparente!', 'info');
+      return;
+    }
+
     // Salvar imagem antes da remoção para possibilitar desfazer
     page._imageBeforeBgRemoval = page.currentImage;
 
@@ -1798,7 +1867,6 @@ class Editor {
         newImg.onload = () => {
           if (page._abortOperation) return;
           page.currentImage = newImg;
-          page.originalImage = newImg;
           page._hasTransparency = true;
           page._bgRemoved = true;
           page.canvas.width = newImg.width;
@@ -1835,6 +1903,18 @@ class Editor {
   async removeBackground(pageId = null, force = false) {
     const page = pageId ? this.getPage(pageId) : this.getActivePage();
     if (!page || !page.currentImage || page._isProcessing) return;
+
+    if (!force) {
+      const isAlreadyTransparent = await this.hasTransparency(page.currentImage);
+      if (isAlreadyTransparent) {
+        page._hasTransparency = true;
+        page._bgRemoved = true;
+        this.fitAndCenterImage(page.id);
+        this.syncRemoveBgButton();
+        if (window.app) window.app.showToast('Imagem já possui fundo transparente!', 'info');
+        return;
+      }
+    }
 
     // Salvar imagem antes da remoção para possibilitar desfazer
     page._imageBeforeBgRemoval = page.currentImage;
@@ -2105,26 +2185,42 @@ class Editor {
     }
     page.history.push({
       imageSrc: page.currentImage.src,
+      originalSrc: page.originalImage ? page.originalImage.src : page.currentImage.src,
+      canvasWidth: page.canvas ? page.canvas.width : (page.currentImage.naturalWidth || page.currentImage.width),
+      canvasHeight: page.canvas ? page.canvas.height : (page.currentImage.naturalHeight || page.currentImage.height),
+      bgRemoved: !!page._bgRemoved,
+      hasTransparency: !!page._hasTransparency,
+      isUpscaled: !!page._isUpscaled,
       adjustments: { ...page.adjustments },
       transform: { ...page.transform }
     });
-    if (page.history.length > 20) page.history.shift();
+    if (page.history.length > 30) page.history.shift();
     page.historyIndex = page.history.length - 1;
     this.triggerAutosave();
   }
   
   undo() {
     const page = this.getActivePage();
-    if (!page || page.historyIndex <= 0) return;
+    if (!page) return;
+    if (page.historyIndex <= 0) {
+      if (window.app) window.app.showToast('Nenhuma ação anterior para desfazer nesta página', 'info');
+      return;
+    }
     page.historyIndex--;
     this.applyHistoryState(page);
+    if (window.app) window.app.showToast('Ação desfeita (Ctrl+Z)', 'info');
   }
   
   redo() {
     const page = this.getActivePage();
-    if (!page || page.historyIndex >= page.history.length - 1) return;
+    if (!page) return;
+    if (page.historyIndex >= page.history.length - 1) {
+      if (window.app) window.app.showToast('Nenhuma ação para refazer', 'info');
+      return;
+    }
     page.historyIndex++;
     this.applyHistoryState(page);
+    if (window.app) window.app.showToast('Ação refeita (Ctrl+Shift+Z)', 'info');
   }
   
   applyHistoryState(page) {
@@ -2132,15 +2228,31 @@ class Editor {
     if (!state) return;
     page.adjustments = { ...state.adjustments };
     page.transform = { ...state.transform };
+    page._bgRemoved = !!state.bgRemoved;
+    page._hasTransparency = !!state.hasTransparency;
+    page._isUpscaled = !!state.isUpscaled;
+
     Object.keys(page.adjustments).forEach(k => this.setAdjustment(k, page.adjustments[k]));
     Object.keys(page.transform).forEach(k => this.setTransform(k, page.transform[k]));
-    if (page.currentImage.src !== state.imageSrc) {
-      const img = new Image();
-      img.onload = () => { page.currentImage = img; this.renderPage(page.id); };
-      img.src = state.imageSrc;
-    } else {
-      this.renderPage(page.id);
+
+    if (state.originalSrc) {
+      const origImg = new Image();
+      origImg.onload = () => { page.originalImage = origImg; };
+      origImg.src = state.originalSrc;
     }
+
+    const img = new Image();
+    img.onload = () => {
+      page.currentImage = img;
+      if (page.canvas) {
+        page.canvas.width = state.canvasWidth || img.width;
+        page.canvas.height = state.canvasHeight || img.height;
+      }
+      this.renderPage(page.id);
+      this.syncRemoveBgButton();
+      this.syncSidebarSliders();
+    };
+    img.src = state.imageSrc;
   }
   
   showOriginal() {
@@ -2809,8 +2921,9 @@ class Editor {
     document.getElementById('btn-reset-adjustments')?.addEventListener('click', () => this.resetAdjustments());
     
     document.getElementById('btn-add-page')?.addEventListener('click', () => {
-      this.createPage();
+      const newPageId = this.createPage();
       this._debouncedLucide();
+      this.scrollToPage(newPageId);
     });
     
     // Abas Manual / Sankhya
@@ -2819,7 +2932,8 @@ class Editor {
     });
     
     document.getElementById('btn-add-variant')?.addEventListener('click', () => {
-      this.addVariantPage();
+      const newPageId = this.addVariantPage();
+      if (newPageId) this.scrollToPage(newPageId);
     });
     
     document.addEventListener('keydown', (e) => {

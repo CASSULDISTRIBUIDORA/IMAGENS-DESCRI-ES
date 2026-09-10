@@ -2954,13 +2954,25 @@ ipcMain.handle('files:selectDirectory', async () => {
 ipcMain.handle('files:readImageAsBase64', async (event, filePath) => {
   try {
     const buffer = fs.readFileSync(filePath);
-    const metadata = await sharp(buffer).metadata();
+    const image = sharp(buffer);
+    const metadata = await image.metadata();
+    let isTransparent = false;
+    if (metadata.hasAlpha) {
+      try {
+        const stats = await image.stats();
+        isTransparent = !stats.isOpaque;
+      } catch (e) {
+        isTransparent = false;
+      }
+    }
     const base64 = buffer.toString('base64');
     return {
       base64: `data:image/${metadata.format};base64,${base64}`,
       width: metadata.width,
       height: metadata.height,
-      format: metadata.format
+      format: metadata.format,
+      hasAlpha: !!metadata.hasAlpha,
+      isTransparent: isTransparent
     };
   } catch (error) {
     console.error('Erro ao ler imagem:', error);

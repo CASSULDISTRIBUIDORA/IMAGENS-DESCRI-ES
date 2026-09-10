@@ -1021,19 +1021,18 @@ class App {
           let finalBase64 = await this.validateAndUpscaleImage(base64);
           if (!finalBase64) return;
           
-          await this.editor.loadImage({
+          const pageId = await this.editor.loadImage({
             base64: finalBase64,
             filePath: file.name || 'imagem_web.jpg',
             format: file.type.split('/')[1] || 'jpeg'
           });
           this.showView('editor');
           this.showToast('Imagem carregada com sucesso!', 'success');
-          // Auto remover fundo
-          setTimeout(() => {
-            if (this.editor && this.editor.removeBackground) {
-              this.editor.removeBackground();
-            }
-          }, 300);
+          if (pageId) {
+            this.editor.setActivePage(pageId);
+            const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
+            await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
+          }
         } catch (err) {
           console.error('Erro ao ler imagem do navegador:', err);
           this.showToast('Erro ao carregar imagem', 'error');
@@ -1077,19 +1076,18 @@ class App {
           let finalBase64 = await this.validateAndUpscaleImage(data.base64);
           if (!finalBase64) return;
           
-          await this.editor.loadImage({
+          const pageId = await this.editor.loadImage({
             base64: finalBase64,
             filePath: data.filePath,
             format: data.format || 'jpg'
           });
           this.showView('editor');
           this.showToast('Imagem carregada com sucesso!', 'success');
-          // Auto remover fundo
-          setTimeout(() => {
-            if (this.editor && this.editor.removeBackground) {
-              this.editor.removeBackground();
-            }
-          }, 300);
+          if (pageId) {
+            this.editor.setActivePage(pageId);
+            const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
+            await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
+          }
         } catch (err) {
           console.error('Erro ao baixar imagem:', err);
           this.showToast('Erro ao baixar imagem da internet', 'error');
@@ -1261,21 +1259,39 @@ class App {
         try {
           const data = await window.api.files.readImageAsBase64(filePath);
           
-          let finalBase64 = await this.validateAndUpscaleImage(data.base64);
-          if (!finalBase64) continue;
+          const upscaleResult = await this.validateAndUpscaleImage(data.base64);
+          if (!upscaleResult) continue;
+          const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
           
-          await this.editor.loadImage({
+          const pageId = await this.editor.loadImage({
             base64: finalBase64,
             filePath: filePath,
-            format: data.format || 'jpg'
+            format: data.format || 'jpg',
+            isTransparent: data.isTransparent
           });
           this.showView('editor');
-          // Auto remover fundo da última página criada
-          setTimeout(() => {
-            if (this.editor && this.editor.removeBackground) {
-              this.editor.removeBackground();
+          if (pageId) {
+            this.editor.setActivePage(pageId);
+            const isUpscaled = !!upscaleResult?.isUpscaled;
+            const page = this.editor.getPage(pageId);
+            if (page) {
+              page._isUpscaled = isUpscaled;
+              if (isUpscaled) page._upscaledImage = page.currentImage;
             }
-          }, 300);
+
+            if (data.isTransparent) {
+              if (page) {
+                page._hasTransparency = true;
+                page._bgRemoved = true;
+                this.editor.syncRemoveBgButton();
+              }
+              this.editor.fitAndCenterImage(pageId);
+              this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+            } else {
+              const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
+              await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
+            }
+          }
         } catch (e) {
           console.error('Erro ao ler imagem:', e);
           this.showToast('Erro ao carregar imagem', 'error');
@@ -1770,20 +1786,35 @@ class App {
   }
   
   async applyPostImageRemoval(pageId, base64, bgMode = 'auto') {
+    const page = this.editor.getPage(pageId);
+    if (!page) return;
+
     if (bgMode === 'none') {
       this.editor.fitAndCenterImage(pageId);
       this.showToast('Imagem em alta resolução mantida e centralizada!', 'success');
       return;
     }
 
+    // 1. VERIFICAÇÃO CRÍTICA DE TRANSPARÊNCIA:
+    // Se a imagem já possui fundo transparente (PNG sem fundo), NUNCA deve remover o fundo!
+    const isAlreadyTransparent = await this.editor.hasTransparency(page.currentImage || base64);
+    if (isAlreadyTransparent) {
+      page._hasTransparency = true;
+      page._bgRemoved = true;
+      this.editor.fitAndCenterImage(pageId);
+      this.editor.renderPage(pageId);
+      this.editor.syncRemoveBgButton();
+      this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+      return;
+    }
+
     let finalMode = bgMode;
     if (finalMode === 'auto') {
       try {
-        const pageRef = this.editor.getPage(pageId);
         const apiKey = this.settingsManager?.settings?.geminiApiKey || '';
         const detectRes = await window.api.image.detectMode({
           base64Data: base64,
-          productName: pageRef?.productName || '',
+          productName: page?.productName || '',
           apiKey: apiKey
         });
         finalMode = detectRes?.mode || 'object';
@@ -1804,15 +1835,19 @@ class App {
       if (p && p.currentImage) {
         const isTransparent = await this.editor.hasTransparency(p.currentImage);
         if (isTransparent) {
+          p._hasTransparency = true;
+          p._bgRemoved = true;
+          this.editor.syncRemoveBgButton();
           this.showToast('Imagem já possui fundo transparente', 'info');
         } else {
           this.editor.removeBackground(pageId, true);
         }
       }
-    }, 300);
+    }, 200);
   }
 
   async handleDropOnPage(pageId, e) {
+    this.editor.setActivePage(pageId);
     const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
     
     if (files.length > 0 && files[0].path) {
@@ -1824,13 +1859,24 @@ class App {
       const isUpscaled = !!upscaleResult?.isUpscaled;
 
       await this.editor.loadImageToPage(pageId, {
-        base64: finalBase64, filePath: files[0].path, format: data.format || 'jpg'
+        base64: finalBase64, filePath: files[0].path, format: data.format || 'jpg', isTransparent: data.isTransparent
       });
 
       const page = this.editor.getPage(pageId);
       if (page) {
         page._isUpscaled = isUpscaled;
         if (isUpscaled) page._upscaledImage = page.currentImage;
+      }
+
+      if (data.isTransparent) {
+        if (page) {
+          page._hasTransparency = true;
+          page._bgRemoved = true;
+          this.editor.syncRemoveBgButton();
+        }
+        this.editor.fitAndCenterImage(pageId);
+        this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+        return;
       }
 
       await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
@@ -2019,7 +2065,8 @@ class App {
       if (e.ctrlKey) {
         // Ctrl+Z (Undo)
         if (e.key === 'z' || e.key === 'Z') {
-          if (!e.shiftKey && this.views.editor.classList.contains('active')) {
+          const isTextInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) && !document.activeElement?.readOnly;
+          if (!isTextInput && !e.shiftKey) {
             e.preventDefault();
             this.editor.undo();
           }
@@ -2027,7 +2074,8 @@ class App {
         
         // Ctrl+Y ou Ctrl+Shift+Z (Redo)
         if (e.key === 'y' || e.key === 'Y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z'))) {
-          if (this.views.editor.classList.contains('active')) {
+          const isTextInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) && !document.activeElement?.readOnly;
+          if (!isTextInput) {
             e.preventDefault();
             this.editor.redo();
           }
