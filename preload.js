@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('api', {
   sankhya: {
     getGroups: (args) => ipcRenderer.invoke('sankhya:getGroups', args),
     getProductImage: (args) => ipcRenderer.invoke('sankhya:getProductImage', args),
+    getWarehouseAddress: (args) => ipcRenderer.invoke('sankhya:getWarehouseAddress', args),
+    getProductStatus: (args) => ipcRenderer.invoke('sankhya:getProductStatus', args),
     query: (args) => ipcRenderer.invoke('sankhya:query', args),
     saveDescription: (args) => ipcRenderer.invoke('sankhya:saveDescription', args),
     markMarketingValidated: (args) => ipcRenderer.invoke('sankhya:markMarketingValidated', args),

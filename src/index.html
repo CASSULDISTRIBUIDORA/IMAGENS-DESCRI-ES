@@ -301,62 +301,79 @@
 
             <!-- Vertical Toolbar -->
             <nav class="editor-vertical-toolbar" id="editor-vertical-toolbar">
+                <button class="vtool-btn" id="btn-magic-wand" title="Varinha Mágica — Clique em uma área de cor para removê-la">
+                    <i data-lucide="wand-2" style="width: 18px; height: 18px;"></i>
+                </button>
                 <button class="vtool-btn" id="btn-open-batch-import" title="Criar páginas em lote por texto livre">
                     <i data-lucide="layers" style="width: 18px; height: 18px;"></i>
                     <span class="vtool-badge">+</span>
                 </button>
             </nav>
 
-            <!-- Main Canvas Area - Pages System -->
-            <main class="editor-main" id="pages-container">
-                <!-- Pages serão criadas dinamicamente pelo JS -->
-                <!-- Template de página (usado pelo JS): -->
-                <!--
-                <div class="page-wrapper" data-page-id="X">
-                    <div class="page-header">
-                        <div class="page-title">Página X - <input class="page-sku-input" placeholder="SKU"></div>
-                        <div class="page-actions">...</div>
-                    </div>
-                    <div class="canvas-container"><canvas></canvas></div>
-                    <div class="page-footer">
-                        <div class="page-export-options">checkboxes</div>
-                        <button>Exportar esta página</button>
-                    </div>
-                </div>
-                -->
-
-                <!-- Botões Inferiores -->
-                <div class="add-page-container" style="display: flex; gap: 10px; justify-content: center; width: 100%; margin-top: 20px;">
-                    <button class="btn-add-page" id="btn-add-page">
-                        <i data-lucide="plus"></i> Adicionar Página
+            <!-- Wrapper Central (Abas + Pages Container) -->
+            <div style="display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; background-color: var(--bg-primary);">
+                <!-- Abas Manual / Sankhya -->
+                <div id="editor-tabs" style="display: flex; gap: 0; padding: 0 12px; border-bottom: 1px solid var(--border-color); background: #0d0e1f; flex-shrink: 0;">
+                    <button class="editor-tab active" data-tab="manual">
+                        ✏️ Manual
+                    </button>
+                    <button class="editor-tab" data-tab="sankhya">
+                        🔄 Sankhya (Fila)
+                        <span id="tab-sankhya-badge" class="tab-badge" style="display:none;"></span>
                     </button>
                 </div>
-                
 
-                <!-- Painel de Seleção de Cenário (IA) -->
-                <div class="ai-thumbnails-container" id="ai-thumbnails-container" style="display: none;">
-                    <div style="display: flex; gap: 12px;" id="ai-thumbnails-list">
-                        <!-- Thumbnails injectadas via JS -->
+                <!-- Main Canvas Area - Pages System -->
+                <main class="editor-main" id="pages-container" style="flex: 1; overflow-y: auto;">
+                    <!-- Pages serão criadas dinamicamente pelo JS -->
+                    <!-- Template de página (usado pelo JS): -->
+                    <!--
+                    <div class="page-wrapper" data-page-id="X">
+                        <div class="page-header">
+                            <div class="page-title">Página X - <input class="page-sku-input" placeholder="SKU"></div>
+                            <div class="page-actions">...</div>
+                        </div>
+                        <div class="canvas-container"><canvas></canvas></div>
+                        <div class="page-footer">
+                            <div class="page-export-options">checkboxes</div>
+                            <button>Exportar esta página</button>
+                        </div>
                     </div>
-                    <div class="ai-thumbnails-actions">
-                        <button class="btn btn-primary btn-sm" id="btn-ai-confirm">
-                            <i data-lucide="check" style="width:14px;height:14px;"></i> Confirmar
-                        </button>
-                        <button class="btn btn-ghost btn-sm" id="btn-ai-cancel">
-                            <i data-lucide="x" style="width:14px;height:14px;"></i> Cancelar
-                        </button>
-                        <button class="btn btn-secondary btn-sm btn-ai-action" id="btn-ai-regen" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 4px;">
-                            <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> Gerar Novamente
-                        </button>
-                    </div>
-                </div>
+                    -->
 
-                <!-- Processing Overlay -->
-                <div class="canvas-overlay" id="editor-loading">
-                    <div class="spinner"></div>
-                    <div class="text-md font-medium">Processando imagem...</div>
-                </div>
-            </main>
+                    <!-- Botões Inferiores -->
+                    <div class="add-page-container" style="display: flex; gap: 10px; justify-content: center; width: 100%; margin-top: 20px;">
+                        <button class="btn-add-page" id="btn-add-page">
+                            <i data-lucide="plus"></i> Adicionar Página
+                        </button>
+                    </div>
+                    
+
+                    <!-- Painel de Seleção de Cenário (IA) -->
+                    <div class="ai-thumbnails-container" id="ai-thumbnails-container" style="display: none;">
+                        <div style="display: flex; gap: 12px;" id="ai-thumbnails-list">
+                            <!-- Thumbnails injectadas via JS -->
+                        </div>
+                        <div class="ai-thumbnails-actions">
+                            <button class="btn btn-primary btn-sm" id="btn-ai-confirm">
+                                <i data-lucide="check" style="width:14px;height:14px;"></i> Confirmar
+                            </button>
+                            <button class="btn btn-ghost btn-sm" id="btn-ai-cancel">
+                                <i data-lucide="x" style="width:14px;height:14px;"></i> Cancelar
+                            </button>
+                            <button class="btn btn-secondary btn-sm btn-ai-action" id="btn-ai-regen" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 4px;">
+                                <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> Gerar Novamente
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Processing Overlay -->
+                    <div class="canvas-overlay" id="editor-loading">
+                        <div class="spinner"></div>
+                        <div class="text-md font-medium">Processando imagem...</div>
+                    </div>
+                </main>
+            </div>
 
             <!-- Right Sidebar -->
             <aside class="editor-sidebar editor-sidebar-right">
@@ -375,6 +392,23 @@
                             <div id="product-ref-name" style="font-size: 11px; color: var(--text-primary); line-height: 1.3; word-wrap: break-word; font-weight: 600;"></div>
                             <div id="product-ref-brand" style="font-size: 10px; color: var(--text-muted); font-style: italic;"></div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Endereço no CD + Validações -->
+                <div id="product-info-panel" style="display: none; padding: 8px 12px; border-bottom: 1px solid var(--border-color);">
+                    <!-- Endereço CD -->
+                    <div id="product-warehouse" style="display: none; margin-bottom: 6px;">
+                        <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 3px; display: flex; align-items: center; gap: 4px;">
+                            <i data-lucide="warehouse" style="width:11px;height:11px;"></i> Endereço no CD
+                        </div>
+                        <div id="warehouse-addresses" style="font-size: 11px; display: flex; flex-wrap: wrap; gap: 4px;"></div>
+                    </div>
+                    <!-- Validações -->
+                    <div id="product-validations" style="display: flex; flex-direction: column; gap: 3px;">
+                        <div id="validation-origin" style="font-size: 10px; display: flex; align-items: center; gap: 5px;"></div>
+                        <div id="validation-main-photo" style="font-size: 10px; display: flex; align-items: center; gap: 5px;"></div>
+                        <div id="validation-alt-photos" style="font-size: 10px; display: flex; align-items: center; gap: 5px;"></div>
                     </div>
                 </div>
 
@@ -566,6 +600,9 @@
                 <div class="settings-menu-item" data-tab="tab-gemini"><i data-lucide="brain"></i> Gemini IA</div>
                 <div class="settings-menu-item" data-tab="tab-perfis"><i data-lucide="layout-grid"></i> Perfis Exportação</div>
                 <div class="settings-menu-item" data-tab="tab-usage"><i data-lucide="bar-chart-3"></i> Uso de IA</div>
+                <div style="flex:1;"></div>
+                <div class="settings-menu-item" id="btn-check-updates" style="cursor:pointer; margin-top: 8px; border-top: 1px solid var(--border-color); padding-top: 12px; color: var(--primary-color);"><i data-lucide="download-cloud"></i> Verificar Atualizações</div>
+                <div style="font-size: 10px; color: var(--text-muted); padding: 4px 12px;" id="app-version-label">v1.1.8</div>
             </div>
             <div class="settings-content">
                 <!-- Geral -->
@@ -708,14 +745,18 @@
                         </div>
                     </div>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
                         <div class="form-group">
                             <label class="form-label">Campo Conclusão MKT</label>
-                            <input type="text" class="form-control" id="settings-sankhya-queue-field" placeholder="Ex: AD_VALIDADOMKT">
+                            <input type="text" class="form-control" id="settings-sankhya-queue-field" placeholder="Ex: AD_STATUS">
                         </div>
                         <div class="form-group">
                             <label class="form-label">Valor Conclusão MKT</label>
-                            <input type="text" class="form-control" id="settings-sankhya-queue-value" placeholder="Ex: S">
+                            <input type="text" class="form-control" id="settings-sankhya-queue-value" placeholder="Ex: VM">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Cód. Usuário MKT (Sankhya)</label>
+                            <input type="text" class="form-control" id="settings-sankhya-codusu" placeholder="Ex: 191">
                         </div>
                     </div>
 
@@ -741,10 +782,19 @@
                 <div class="settings-section">
                 <h3 class="settings-section-title">Gemini IA</h3>
                 <div class="form-group" style="max-width: 500px;">
-                    <label class="form-label">API Key — Gemini</label>
+                    <label class="form-label">API Key Principal (Gratuita)</label>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        <input type="password" class="form-control" id="settings-gemini-key" placeholder="Cole sua API Key do Gemini aqui">
+                        <input type="password" class="form-control" id="settings-gemini-key" placeholder="Cole sua API Key Gratuita do Gemini aqui">
                         <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-gemini-key');el.type=el.type==='password'?'text':'password'">
+                            <i data-lucide="eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group" style="max-width: 500px; margin-top: 12px;">
+                    <label class="form-label">API Key Secundária / Backup (Paga)</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" class="form-control" id="settings-gemini-key-fallback" placeholder="Cole sua API Key Paga do Gemini (para quando a gratuita esgotar)">
+                        <button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('settings-gemini-key-fallback');el.type=el.type==='password'?'text':'password'">
                             <i data-lucide="eye"></i>
                         </button>
                     </div>

@@ -60,10 +60,10 @@ const DEFAULT_SETTINGS = {
   ],
   parallelProcessing: 4,
   removeBgApiKey: "",
-  sankhyaSecret: "hQ4IljPduWLCj9pDNdzfPppkbx8X1O0O",
-  sankhyaToken: "6d08d761-8a17-4af9-9662-207f0959948a",
+  sankhyaSecret: "",
+  sankhyaToken: "",
   sankhyaQuery: "SELECT\np.CODPROD AS CODIGO\n, p.DESCRPROD AS NOME \n, m.descricao AS MARCA\n, p.CARACTERISTICAS \n, d2.DESCRGRUPOPROD GRUPO_NIVEL2\n, d3.DESCRGRUPOPROD GRUPO_NIVEL3\n, d4.DESCRGRUPOPROD GRUPO_NIVEL4\n, p.AD_CATEGORIAPRODUTO \nFROM tgfpro p\nJOIN TGFMAR m ON m.codigo = p.CODMARCA \nLEFT JOIN TGFGRU d4 ON d4.CODGRUPOPROD = p.CODGRUPOPROD \nLEFT JOIN TGFGRU d3 on (d4.codgrupai=d3.codgrupoprod)\nLEFT JOIN TGFGRU d2 on (d3.codgrupai=d2.codgrupoprod)\nLEFT JOIN TGFGRU d1 on (d2.codgrupai=d1.codgrupoprod)\nWHERE p.CODPROD = {SKU}",
-  geminiApiKey: "AIzaSyBx4nUdur6hRJYYjqqIdM20SBA5deJ8mvU",
+  geminiApiKey: "",
   geminiPrompt: "PADRÃO DE GERAÇÃO DE DESCRIÇÕES - PRODUTOS SANKHYA\n\n1. FORMATO DE SAÍDA\n- A descrição final deve ser sempre gerada dentro de um bloco de texto limpo (code block) mas com toda a acentuação e pontuação da língua portuguesa perfeitamente preservadas, utilizando exclusivamente a marcação de código pura de texto simples (plaintext).\n- Não utilizar formatações ricas em Markdown (como negritos ou itálicos) dentro do bloco de texto final.\n\n2. ESTRUTURA DE TÓPICOS INTELIGENTE (ADAPTATIVA)\nO sistema deve identificar a natureza do produto antes de nomear os tópicos. O texto deve ser dividido nas seções abaixo (em LETRAS MAIÚSCULAS), omitindo e adaptando o que não fizer sentido:\n- TÍTULO DO PRODUTO (Nome isolado na primeira linha)\n- Parágrafo Introdutório: Texto corrido resumindo o que é o produto e seu benefício principal (máximo de 2 a 3 linhas).\n- PRINCIPAIS INDICAÇÕES, BENEFÍCIOS E ESPECIFICAÇÕES (Para medicamentos/químicos) OU PRINCIPAIS CARACTERÍSTICAS E BENEFÍCIOS (Para roupas, EPIs e objetos): Lista em tópicos (-). Agrupe marca, cor ou voltagem aqui.\n- FÓRMULA E COMPOSIÇÃO (Para medicamentos/nutrição, realizando a transcrição exata) OU MATERIAL E COMPOSIÇÃO (Para vestuário/ferramentas).\n- MODO DE USAR E POSOLOGIA (Para medicamentos) OU INSTRUÇÕES DE USO / CUIDADOS (Para roupas, equipamentos e limpeza).\n- PERÍODOS DE CARÊNCIA: Lista indicando prazos de descarte. (EXCLUSIVO para produtos veterinários/agrícolas).\n- APRESENTAÇÃO (REGRA DE OURO): ÚLTIMA informação do texto. Detalhe EXCLUSIVAMENTE AQUI os volumes, tamanhos (P, M, G, numerações) e tipos de embalagem.\n\n3. TOM, ESTILO E REGRA ANTI-REPETIÇÃO\n- Linguagem técnica, profissional, clara e objetiva.\n- Regra de Informação Única: NENHUMA característica técnica deve aparecer em mais de um tópico.\n  * Tamanhos, pesos e volumes vão APENAS para a \"Apresentação\".\n  * Espécies-alvo ou público-alvo vão APENAS para as \"Indicações\".\n  * Marca e cor vão APENAS para as \"Especificações\".\n- Eliminar jargões comerciais vazios (ex: \"feito com alta qualidade\", \"design incrível\") e informações óbvias que não agregam valor técnico.\n\n4. CAUTELA JURÍDICA\n- Proibido o uso de termos hiperbólicos ou adjetivos extremos (ex: \"ultra eficiente\", \"cura garantida\").\n- Substituir promessas terapêuticas absolutas por termos seguros (ex: trocar \"evita\" ou \"cura\" por \"auxilia no tratamento de\"). Fidelidade estrita à bula.\n\n5. REGRA DE LIMITE DE CARACTERES E FORMATAÇÃO\n- O texto final gerado DEVE possuir no máximo 3.500 caracteres (incluindo espaços e quebras de linha).\n- Os pontinhos de preenchimento (e.g. .............) na seção \"FÓRMULA E COMPOSIÇÃO\" são OBRIGATÓRIOS apenas para medicamentos e químicos. Não utilizar para roupas e equipamentos.\n- Sintetizar listas e mesclar informações afins de forma compacta e direta.",
   sankhyaEnvironment: "production",
   sankhyaClientId: "8897fb53-3515-443d-a0b0-78a0af796756",
@@ -72,6 +72,7 @@ const DEFAULT_SETTINGS = {
   sankhyaQueueQuery: "SELECT \nCASE WHEN AD_STATUS LIKE 'P' THEN 'Pendente'\n     WHEN ad_status LIKE 'VC' THEN 'Validado pelo Comercial'\n     WHEN ad_status LIKE 'VF' THEN 'Validado pelo Financeiro'\n     WHEN ad_status LIKE 'VL' THEN 'Validado pela Logística'\n     WHEN ad_status LIKE 'VM' THEN 'Validado pelo Marketing'\n     ELSE 'Concluído' END STATUS,\ncodprod, DESCRPROD, AD_DESCRPRODSITE, IMAGEM, ad_status, tgfpro.* \nFROM tgfpro \nWHERE AD_STATUS = 'VL'",
   sankhyaQueueField: "AD_STATUS",
   sankhyaQueueValue: "VM",
+  sankhyaCodUsu: "",
   sankhyaFtpHost: "192.168.10.138",
   sankhyaFtpUser: "mgeweb",
   sankhyaFtpPassword: "5nkca55ul",
@@ -250,6 +251,14 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  
+  // Pré-carregar motor BiRefNet para remoção de fundo (carrega modelo em background)
+  setTimeout(() => {
+    if (getRembgExePath()) {
+      fs.appendFileSync(logFile, `[rembg] Pré-carregando motor BiRefNet em background...\n`);
+      startRembgProcess();
+    }
+  }, 3000);
 
   // Configurar inicialização junto com o Windows (rodando oculto em background)
   app.setLoginItemSettings({
@@ -604,8 +613,6 @@ let rembgProcess = null;
 let rembgReady = false;
 let rembgPendingResolve = null;
 let rembgBuffer = '';
-let pythonChecked = false;
-let pythonAvailable = false;
 let imglyModule = null;
 
 function getImglyPublicPath() {
@@ -637,43 +644,41 @@ async function removeBgWithImgly(imgBuffer) {
   return Buffer.from(ab);
 }
 
-function isPythonAvailable() {
-  if (pythonChecked) return pythonAvailable;
+function getRembgExePath() {
+  // 1. Empacotado no build (extraResources)
+  if (process.resourcesPath) {
+    const packed = path.join(process.resourcesPath, 'rembg_server', 'rembg_server.exe');
+    if (fs.existsSync(packed)) return { exe: packed, args: [], source: 'empacotado' };
+  }
+  // 2. Em desenvolvimento (dist local)
+  const devPath = path.join(__dirname, 'dist', 'rembg_server', 'rembg_server.exe');
+  if (fs.existsSync(devPath)) return { exe: devPath, args: [], source: 'dev-local' };
+  // 3. Fallback: Python do sistema com script
   try {
     const { execSync } = require('child_process');
-    // Verifica rigorosamente se o Python está presente e se o módulo rembg está instalado
     execSync('python -c "import rembg"', { stdio: 'ignore', timeout: 2500 });
-    pythonAvailable = true;
-    fs.appendFileSync(logFile, `[rembg] Python com módulo rembg detectado com sucesso.\n`);
-  } catch (e) {
-    pythonAvailable = false;
-    fs.appendFileSync(logFile, `[rembg] Python/rembg indisponível no sistema. Usando motor nativo @imgly.\n`);
-  }
-  pythonChecked = true;
-  return pythonAvailable;
+    let scriptPath = process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'remove_bg.py') : null;
+    if (!scriptPath || !fs.existsSync(scriptPath)) scriptPath = path.join(__dirname, 'scripts', 'remove_bg.py');
+    if (fs.existsSync(scriptPath)) return { exe: 'python', args: [scriptPath], source: 'python-sistema' };
+  } catch (e) { /* Python indisponível */ }
+  return null;
 }
 
 function startRembgProcess() {
   if (rembgProcess) return;
-  if (!isPythonAvailable()) {
-    fs.appendFileSync(logFile, `[rembg] Python não detectado nesta máquina. Usando motor nativo @imgly.\n`);
+  
+  const rembgInfo = getRembgExePath();
+  if (!rembgInfo) {
+    fs.appendFileSync(logFile, `[rembg] Nenhum motor BiRefNet encontrado (exe empacotado, dev-local ou Python). Usando @imgly.\n`);
     return;
   }
   
-  let scriptPath = path.join(process.resourcesPath, 'scripts', 'remove_bg.py');
-  if (!fs.existsSync(scriptPath)) {
-    scriptPath = path.join(__dirname, 'scripts', 'remove_bg.py');
-  }
-  if (!fs.existsSync(scriptPath)) {
-    fs.appendFileSync(logFile, `[rembg] Script remove_bg.py não encontrado.\n`);
-    return;
-  }
-
+  fs.appendFileSync(logFile, `[rembg] Iniciando motor BiRefNet (${rembgInfo.source}): ${rembgInfo.exe} ${rembgInfo.args.join(' ')}\n`);
+  
   const { spawn } = require('child_process');
-  fs.appendFileSync(logFile, `[rembg] Iniciando processo: ${scriptPath}\n`);
   
   try {
-    rembgProcess = spawn('python', [scriptPath], {
+    rembgProcess = spawn(rembgInfo.exe, rembgInfo.args, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -705,7 +710,7 @@ function startRembgProcess() {
         fs.appendFileSync(logFile, `[rembg] stdout: ${trimmed}\n`);
         
         if (trimmed === 'LOADING') {
-          fs.appendFileSync(logFile, `[rembg] Carregando modelo BiRefNet...\n`);
+          fs.appendFileSync(logFile, `[rembg] Carregando modelos (BRIA RMBG-2.0 + BiRefNet)...\n`);
         } else if (trimmed === 'READY') {
           rembgReady = true;
           fs.appendFileSync(logFile, `[rembg] Modelo carregado! Pronto para processar.\n`);
@@ -757,13 +762,13 @@ function sendToRembg(command) {
       return;
     }
     
-    // Timeout de 20 segundos
+    // Timeout de 60 segundos (BRIA pode demorar mais)
     setTimeout(() => {
       if (rembgPendingResolve === resolve) {
         rembgPendingResolve = null;
         reject(new Error('Timeout ao processar imagem via Python'));
       }
-    }, 20000);
+    }, 60000);
   });
 }
 
@@ -1122,13 +1127,13 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey }) => 
     let processedBuffer = null;
     let elapsed = 0;
     
-    // 1. Tentar Python (rembg BiRefNet) se e somente se Python e rembg estiverem confirmados
-    if (isPythonAvailable()) {
+    // 1. Tentar motor BiRefNet (exe empacotado, dev-local ou Python do sistema)
+    if (getRembgExePath()) {
       try {
         if (!rembgProcess) {
           startRembgProcess();
-          fs.appendFileSync(logFile, `[rembg] Aguardando modelo carregar (primeira vez)...\n`);
-          await waitForRembgReady();
+          fs.appendFileSync(logFile, `[rembg] Aguardando modelo carregar (primeira vez, até 60s)...\n`);
+          await waitForRembgReady(60000);
         }
         
         if (rembgProcess && rembgReady) {
@@ -1403,6 +1408,62 @@ ipcMain.handle('sankhya:query', async (event, { sku, secret, token, query, envir
   } catch (error) {
     fs.appendFileSync(logFile, `[Sankhya] ERRO: ${error.message}\n`);
     throw new Error(error.message || 'Erro ao consultar Sankhya');
+  }
+});
+
+// ============================================================
+// IPC Handlers - Sankhya (Endereço no CD)
+// ============================================================
+ipcMain.handle('sankhya:getWarehouseAddress', async (event, { sku, secret, token, environment, clientId }) => {
+  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] [Sankhya] Buscando endereço CD para SKU: ${sku}\n`);
+  try {
+    const { accessToken, baseUrl } = await authenticateSankhya({ clientId, secret, token, environment });
+    const sql = `SELECT ENDWMS.ENDERECO FROM TGFPRO PRO INNER JOIN TGWEST EST ON EST.CODPROD = PRO.CODPROD AND EST.ESTOQUE > 0 INNER JOIN TGWEND ENDWMS ON ENDWMS.CODEND = EST.CODEND AND ENDWMS.ENDERECO NOT LIKE '01.90%' INNER JOIN tsiusu usu ON usu.CODUSU = pro.CODUSU WHERE PRO.UTILIZAWMS = 'S' AND pro.CODPROD = ${sku} ORDER BY ENDWMS.ENDERECO`;
+    const response = await fetch(`${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+      body: JSON.stringify({ serviceName: 'DbExplorerSP.executeQuery', requestBody: { sql } })
+    });
+    const data = await response.json().catch(() => null);
+    const addresses = [];
+    if (data?.responseBody?.rows && Array.isArray(data.responseBody.rows)) {
+      for (const row of data.responseBody.rows) {
+        const addr = Array.isArray(row) ? row[0] : Object.values(row)[0];
+        if (addr) addresses.push(String(addr).trim());
+      }
+    }
+    fs.appendFileSync(logFile, `[Sankhya] Endereços CD SKU ${sku}: ${addresses.length} encontrado(s)\n`);
+    return { success: true, addresses };
+  } catch (error) {
+    fs.appendFileSync(logFile, `[Sankhya] ERRO endereço CD: ${error.message}\n`);
+    return { success: false, addresses: [], error: error.message };
+  }
+});
+
+// ============================================================
+// IPC Handlers - Sankhya (Status do Produto - Fotos Alternativas)
+// ============================================================
+ipcMain.handle('sankhya:getProductStatus', async (event, { sku, secret, token, environment, clientId }) => {
+  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] [Sankhya] Buscando status produto SKU: ${sku}\n`);
+  try {
+    const { accessToken, baseUrl } = await authenticateSankhya({ clientId, secret, token, environment });
+    const sql = `SELECT COUNT(*) AS QTD FROM TGFIMAL WHERE CODPROD = ${sku}`;
+    const response = await fetch(`${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+      body: JSON.stringify({ serviceName: 'DbExplorerSP.executeQuery', requestBody: { sql } })
+    });
+    const data = await response.json().catch(() => null);
+    let altCount = 0;
+    if (data?.responseBody?.rows && Array.isArray(data.responseBody.rows) && data.responseBody.rows.length > 0) {
+      const row = data.responseBody.rows[0];
+      altCount = Number(Array.isArray(row) ? row[0] : Object.values(row)[0]) || 0;
+    }
+    fs.appendFileSync(logFile, `[Sankhya] Status SKU ${sku}: ${altCount} fotos alternativas\n`);
+    return { success: true, altCount };
+  } catch (error) {
+    fs.appendFileSync(logFile, `[Sankhya] ERRO status produto: ${error.message}\n`);
+    return { success: false, altCount: 0, error: error.message };
   }
 });
 
@@ -2038,16 +2099,140 @@ ipcMain.handle('sankhya:uploadMainImage', async (event, { imageBase64, codProd, 
     
     if (saveData && saveData.status === '1') {
       fs.appendFileSync(logFile, `[Sankhya] SUCESSO! Imagem principal vinculada ao CODPROD=${codProd}\n`);
+      return { success: true };
     } else {
       const errMsg = saveData?.statusMessage || 'Erro desconhecido';
       fs.appendFileSync(logFile, `[Sankhya] FALHA ao vincular imagem: ${errMsg}. Verifique permissoes do usuario de integracao no Sankhya (CRUDServiceProvider.saveRecord + entidade Produto).\n`);
+      throw new Error(`O Sankhya recusou o salvamento da Imagem Principal: ${errMsg}`);
     }
-    return { success: true };
   } catch (error) {
     fs.appendFileSync(logFile, `[Sankhya] ERRO upload imagem principal: ${error.message}\n`);
     throw new Error(error.message || 'Erro ao fazer upload da imagem principal');
   }
 });
+let primaryGeminiKeyDisabledUntil = 0;
+const geminiModelCooldownMap = new Map();
+const GEMINI_TEXT_MODELS = [
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.7-flash',
+  'gemini-3.8-flash'
+];
+
+function getActiveGeminiTextModel() {
+  const now = Date.now();
+  for (const model of GEMINI_TEXT_MODELS) {
+    const disabledUntil = geminiModelCooldownMap.get(model) || 0;
+    if (now >= disabledUntil) {
+      return model;
+    }
+  }
+  // Se todos estiverem temporariamente com cooldown, remove do prioritário e tenta
+  geminiModelCooldownMap.delete(GEMINI_TEXT_MODELS[0]);
+  return GEMINI_TEXT_MODELS[0];
+}
+
+function markGeminiModelCooldown(model, durationMs = 3 * 60 * 1000) {
+  geminiModelCooldownMap.set(model, Date.now() + durationMs);
+  fs.appendFileSync(logFile, `[Gemini] Modelo ${model} colocado em repouso por ${Math.round(durationMs / 1000)}s devido a erro 503/429.\n`);
+}
+
+async function fetchGeminiWithSmartModel(buildBody, primaryKey, fallbackKeyInput) {
+  let fallbackKey = fallbackKeyInput;
+  if (!fallbackKey) {
+    try {
+      const storedSettings = JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8'));
+      fallbackKey = storedSettings.geminiApiKeyFallback || '';
+    } catch (e) {
+      fs.appendFileSync(logFile, `[Gemini] Erro ao ler fallbackKey: ${e.message}\n`);
+    }
+  }
+
+  const isPrimaryActive = Date.now() >= primaryGeminiKeyDisabledUntil;
+  let activeKey = (isPrimaryActive && primaryKey) ? primaryKey : (fallbackKey || primaryKey);
+
+  if (!activeKey) {
+    throw new Error('Nenhuma chave de API do Gemini foi fornecida ou configurada.');
+  }
+
+  let lastError = null;
+  const maxModelTries = GEMINI_TEXT_MODELS.length;
+
+  for (let attempt = 0; attempt < maxModelTries; attempt++) {
+    const currentModel = getActiveGeminiTextModel();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${activeKey}`;
+
+    fs.appendFileSync(logFile, `[Gemini] Requisição com modelo: ${currentModel} (tentativa ${attempt + 1}/${maxModelTries})\n`);
+
+    try {
+      let response = await fetch(url, buildBody());
+
+      // 1. Tratamento de cota da chave (402, 403, ou 429 por cota de projeto)
+      if ((response.status === 402 || response.status === 403) && activeKey === primaryKey && fallbackKey && fallbackKey !== primaryKey) {
+        primaryGeminiKeyDisabledUntil = Date.now() + 30 * 60 * 1000;
+        fs.appendFileSync(logFile, `[Gemini] Cota da chave esgotada (HTTP ${response.status}). Comutando para chave de backup!\n`);
+        activeKey = fallbackKey;
+        const backupUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${activeKey}`;
+        response = await fetch(backupUrl, buildBody());
+      }
+
+      // 2. Tratamento de sobrecarga (503) ou rate-limit específico do modelo (429)
+      if (response.status === 503 || response.status === 429) {
+        const errText = await response.text().catch(() => '');
+        fs.appendFileSync(logFile, `[Gemini] Modelo ${currentModel} indisponível (HTTP ${response.status}): ${errText.substring(0, 150)}\n`);
+        markGeminiModelCooldown(currentModel, 3 * 60 * 1000); // 3 minutos de repouso
+        lastError = new Error(`Modelo ${currentModel} indisponível (HTTP ${response.status})`);
+        continue; // Tenta o próximo modelo livre na próxima iteração!
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        fs.appendFileSync(logFile, `[Gemini] Erro HTTP ${response.status}: ${errorText}\n`);
+        throw new Error(`Gemini retornou HTTP ${response.status}`);
+      }
+
+      return { response, model: currentModel };
+    } catch (err) {
+      fs.appendFileSync(logFile, `[Gemini] Falha ao consultar ${currentModel}: ${err.message}\n`);
+      markGeminiModelCooldown(currentModel, 2 * 60 * 1000);
+      lastError = err;
+      continue;
+    }
+  }
+
+  throw lastError || new Error('Todos os modelos do Gemini estão temporariamente indisponíveis.');
+}
+
+async function fetchGeminiWithFallback(urlBuilder, fetchOptions, primaryKey, fallbackKeyInput) {
+  let fallbackKey = fallbackKeyInput;
+  if (!fallbackKey) {
+    try {
+      const storedSettings = JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8'));
+      fallbackKey = storedSettings.geminiApiKeyFallback || '';
+    } catch (e) {
+      fs.appendFileSync(logFile, `[Gemini] Erro ao ler fallbackKey: ${e.message}\n`);
+    }
+  }
+
+  const isPrimaryActive = Date.now() >= primaryGeminiKeyDisabledUntil;
+  let activeKey = (isPrimaryActive && primaryKey) ? primaryKey : (fallbackKey || primaryKey);
+
+  if (!activeKey) {
+    throw new Error('Nenhuma chave de API do Gemini foi fornecida ou configurada.');
+  }
+
+  let response = await fetch(urlBuilder(activeKey), fetchOptions);
+
+  // Se der erro de limite (429/402/403) na chave primária e tivermos chave de backup:
+  if ((response.status === 429 || response.status === 402 || response.status === 403) && activeKey === primaryKey && fallbackKey && fallbackKey !== primaryKey) {
+    primaryGeminiKeyDisabledUntil = Date.now() + 30 * 60 * 1000; // Desativa chave primária por 30 minutos
+    fs.appendFileSync(logFile, `[Gemini] Cota da chave gratuita esgotada (HTTP ${response.status}). Comutando INSTANTANEAMENTE para chave de backup!\n`);
+    activeKey = fallbackKey;
+    response = await fetch(urlBuilder(activeKey), fetchOptions);
+  }
+
+  return response;
+}
 
 // ============================================================
 // IPC Handlers - Gemini (Reescrita de Texto)
@@ -2080,7 +2265,7 @@ ipcMain.handle('gemini:rewrite', async (event, { text, productName, apiKey, prom
   }
   
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+    const buildBody = () => ({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2090,19 +2275,15 @@ ipcMain.handle('gemini:rewrite', async (event, { text, productName, apiKey, prom
         contents: [{ parts }]
       })
     });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      fs.appendFileSync(logFile, `[Gemini] Erro HTTP ${response.status}: ${errorText}\n`);
-      throw new Error(`Gemini retornou HTTP ${response.status}`);
-    }
+
+    const { response, model } = await fetchGeminiWithSmartModel(buildBody, apiKey);
     
     const data = await response.json();
     let result = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     // Limpar formatação markdown que o Gemini pode adicionar
     result = result.replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '').trim();
     result = result.replace(/\*\*/g, '').replace(/\*/g, '');
-    fs.appendFileSync(logFile, `[Gemini] Resultado: ${result.substring(0, 200)}...\n`);
+    fs.appendFileSync(logFile, `[Gemini] Resultado via ${model}: ${result.substring(0, 200)}...\n`);
     trackApiCall('rewrite', data.usageMetadata);
     return { text: result };
   } catch (error) {
@@ -2136,7 +2317,8 @@ REGRAS ESTRITAS:
 5. Retorne SOMENTE os números dos códigos encontrados, um por linha, em texto puro, sem asteriscos, sem bullets, sem explicações, sem markdown.
 6. Se não houver nenhum código legível, retorne exatamente: VAZIO`;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+    const urlBuilder = (key) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${key}`;
+    const fetchOptions = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2155,7 +2337,8 @@ REGRAS ESTRITAS:
           ]
         }]
       })
-    });
+    };
+    const response = await fetchGeminiWithFallback(urlBuilder, fetchOptions, apiKey);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -2200,7 +2383,8 @@ ipcMain.handle('gemini:auto-enhance', async (event, { imageBase64, apiKey }) => 
   fs.appendFileSync(logFile, `[Gemini] Auto-enhance imagem (${Math.round(imageBase64.length / 1024)}KB)\n`);
   
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+    const urlBuilder = (key) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${key}`;
+    const fetchOptions = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2217,7 +2401,8 @@ ipcMain.handle('gemini:auto-enhance', async (event, { imageBase64, apiKey }) => 
           ]
         }]
       })
-    });
+    };
+    const response = await fetchGeminiWithFallback(urlBuilder, fetchOptions, apiKey);
     
     if (!response.ok) {
       const errorText = await response.text();
@@ -2275,18 +2460,20 @@ ipcMain.handle('gemini:inpaint', async (event, { imageBase64, maskBase64, fullIm
       return parts;
     };
     
-    const temperatures = [0.4, 0.8, 1.2];
+    const temperatures = [0.4, 1.0];
   
   const makeRequest = async (temp) => {
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${apiKey}`, {
+      const urlBuilder = (key) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${key}`;
+      const fetchOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           generationConfig: { responseModalities: ['IMAGE', 'TEXT'], temperature: temp },
           contents: [{ parts: buildParts() }]
         })
-      });
+      };
+      const response = await fetchGeminiWithFallback(urlBuilder, fetchOptions, apiKey);
       
       if (!response.ok) return null;
       
@@ -2310,9 +2497,13 @@ ipcMain.handle('gemini:inpaint', async (event, { imageBase64, maskBase64, fullIm
   };
   
   try {
-    // 3 requisições em paralelo com temperaturas diferentes
-    const results = await Promise.all(temperatures.map(t => makeRequest(t)));
-    const validResults = results.filter(r => r !== null);
+    // Chamadas sequenciais com delay para evitar HTTP 429 (rate limit)
+    const validResults = [];
+    for (let i = 0; i < temperatures.length; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 12000)); // 12s de delay entre chamadas (rate limit Gemini)
+      const result = await makeRequest(temperatures[i]);
+      if (result) validResults.push(result);
+    }
     
     fs.appendFileSync(logFile, `[Gemini] Inpaint OK - ${validResults.length}/${variations} variações geradas\n`);
     
@@ -2357,7 +2548,8 @@ CRITICAL EDITING RULES:
   }
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${apiKey}`, {
+    const urlBuilder = (key) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${key}`;
+    const fetchOptions = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2369,30 +2561,32 @@ CRITICAL EDITING RULES:
           ]
         }]
       })
-    });
+    };
+
+    const response = await fetchGeminiWithFallback(urlBuilder, fetchOptions, apiKey);
     
     if (!response.ok) {
       const errorText = await response.text();
       fs.appendFileSync(logFile, `[Gemini] Upscale erro HTTP ${response.status}: ${errorText}\n`);
       throw new Error(`Gemini retornou HTTP ${response.status}`);
     }
-    
-    const data = await response.json();
-    const responseParts = data.candidates?.[0]?.content?.parts || [];
-    const imagePart = responseParts.find(p => {
-      if (p.inline_data && p.inline_data.mime_type) return p.inline_data.mime_type.startsWith('image/');
-      if (p.inlineData && p.inlineData.mimeType) return p.inlineData.mimeType.startsWith('image/');
-      return false;
-    });
-    
-    if (!imagePart) {
-      throw new Error('Nenhuma imagem foi retornada pelo Gemini no Upscale');
-    }
-    
-    const imgData = imagePart.inline_data || imagePart.inlineData;
-    const mimeType = imgData.mime_type || imgData.mimeType;
-    trackApiCall('upscale', data.usageMetadata);
-    return { base64: `data:${mimeType};base64,${imgData.data}` };
+      
+      const data = await response.json();
+      const responseParts = data.candidates?.[0]?.content?.parts || [];
+      const imagePart = responseParts.find(p => {
+        if (p.inline_data && p.inline_data.mime_type) return p.inline_data.mime_type.startsWith('image/');
+        if (p.inlineData && p.inlineData.mimeType) return p.inlineData.mimeType.startsWith('image/');
+        return false;
+      });
+      
+      if (!imagePart) {
+        throw new Error('Nenhuma imagem foi retornada pelo Gemini no Upscale');
+      }
+      
+      const imgData = imagePart.inline_data || imagePart.inlineData;
+      const mimeType = imgData.mime_type || imgData.mimeType;
+      trackApiCall('upscale', data.usageMetadata);
+      return { base64: `data:${mimeType};base64,${imgData.data}` };
 
   } catch (error) {
     fs.appendFileSync(logFile, `[Gemini] Upscale ERRO: ${error.message}\n`);
@@ -2665,8 +2859,12 @@ ipcMain.handle('sankhya:getGroups', async (event, { secret, token, environment, 
   }
 });
 
-ipcMain.handle('sankhya:markMarketingValidated', async (event, { sku, secret, token, environment, clientId, queueField, queueValue }) => {
-  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] [Sankhya] Validando MKT SKU: ${sku} (${queueField}=${queueValue})\n`);
+ipcMain.handle('sankhya:markMarketingValidated', async (event, { sku, secret, token, environment, clientId, queueField, queueValue, codUsu }) => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const dhAtual = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] [Sankhya] Validando MKT SKU: ${sku} (${queueField}=${queueValue}, CODUSU=${codUsu || 'N/A'}, DH=${dhAtual})\n`);
   
   if (!queueField || !queueValue) {
     throw new Error('Campo e valor de validação do marketing não configurados nas opções.');
@@ -2674,6 +2872,17 @@ ipcMain.handle('sankhya:markMarketingValidated', async (event, { sku, secret, to
 
   try {
     const { accessToken, baseUrl } = await authenticateSankhya({ clientId, secret, token, environment });
+
+    const localFields = {
+      [queueField]: { '$': queueValue },
+      AD_DHVALMKT: { '$': dhAtual }
+    };
+    const fieldList = ['CODPROD', queueField, 'AD_DHVALMKT'];
+
+    if (codUsu && String(codUsu).trim()) {
+      localFields['AD_CODUSUMKT'] = { '$': String(codUsu).trim() };
+      fieldList.push('AD_CODUSUMKT');
+    }
     
     const response = await fetch(`${baseUrl}/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json`, {
       method: 'POST',
@@ -2688,16 +2897,14 @@ ipcMain.handle('sankhya:markMarketingValidated', async (event, { sku, secret, to
             rootEntity: 'Produto',
             includePresentationFields: 'N',
             dataRow: {
-              localFields: {
-                [queueField]: { '$': queueValue }
-              },
+              localFields,
               key: {
                 CODPROD: { '$': String(sku) }
               }
             },
             entity: {
               fieldset: {
-                list: `CODPROD,${queueField}`
+                list: fieldList.join(',')
               }
             }
           }

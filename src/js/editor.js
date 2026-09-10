@@ -4,6 +4,7 @@ class Editor {
     this.pages = []; // Array de objetos de página
     this.activePageId = null;
     this.nextPageId = 1;
+    this.activeTab = 'manual'; // 'manual' ou 'sankhya'
     this.isProcessing = false;
     
     // Overlay helpers
@@ -128,29 +129,50 @@ class Editor {
     // ======================== Page Management ========================
   
   async loadQueue(skus) {
-    if (!skus || skus.length === 0) return;
+    if (!skus) return;
     
     this._isLoadingQueue = true;
     const hadActivePage = this.activePageId && this.pages.length > 0;
     const savedActiveId = this.activePageId;
     
-    for (const sku of skus) {
-      const cleanSku = String(sku || '').trim();
-      if (!cleanSku) continue;
+    // Lista para guardar quais SKUs estão de fato ativos na fila agora
+    const activeSkus = skus.map(s => String(s || '').trim());
+    
+    // 1. Remover páginas que vieram da fila automaticamente, mas que não estão mais pendentes no Sankhya
+    const pagesToRemove = this.pages.filter(p => {
+      if (p.fromQueue) { // Só validamos páginas abertas pela fila
+        const pSku = String(p.sku || '').trim();
+        return pSku && !activeSkus.includes(pSku);
+      }
+      return false; // Páginas manuais não são tocadas
+    });
+    
+    for (const p of pagesToRemove) {
+      console.log(`[Queue] SKU ${p.sku} não está mais pendente no banco. Fechando da tela...`);
+      this.closePage(p.id);
+    }
+    
+    // 2. Adicionar as novas que ainda não estão abertas
+    for (const sku of activeSkus) {
+      if (!sku) continue;
       
       // Evitar duplicar se o SKU já existe em alguma página aberta
-      const existing = this.pages.find(p => String(p.sku || '').trim() === cleanSku);
+      const existing = this.pages.find(p => String(p.sku || '').trim() === sku);
       if (existing) {
-        console.log(`[Queue] SKU ${cleanSku} já está no editor (Página ${existing.id}), pulando duplicação.`);
+        // Garantir que sabemos que ele pertence à fila para poder fechá-lo no futuro se ele for processado externamente
+        if (!existing.fromQueue) existing.fromQueue = true;
+        console.log(`[Queue] SKU ${sku} já está no editor (Página ${existing.id}), pulando duplicação.`);
         continue;
       }
       
       const pageId = this.createPageSilent();
       const page = this.pages.find(p => p.id === pageId);
       if (page) {
-        page.sku = cleanSku;
+        page.sku = sku;
+        page.fromQueue = true; // MARCADOR DE QUE VEIO DA FILA AUTOMÁTICA
+        this.updatePageActionButtons(pageId);
         const input = document.querySelector(`.page-sku-input[data-page-id="${pageId}"]`);
-        if (input) input.value = cleanSku;
+        if (input) input.value = sku;
         await this.buscarSkuSilent(pageId);
         await new Promise(r => setTimeout(r, 300));
       }
@@ -160,12 +182,169 @@ class Editor {
     
     if (!hadActivePage && this.pages.length > 0) {
       this.setActivePage(this.pages[0].id);
-    } else if (savedActiveId) {
+    } else if (savedActiveId && this.pages.find(p => p.id === savedActiveId)) {
       this.setActivePage(savedActiveId);
+    } else if (this.pages.length > 0) {
+      this.setActivePage(this.pages[0].id);
     }
 
     if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
       window.app.updateStatusBarQueueCount();
+    }
+    this.updateTabBadge();
+    this.filterPagesByTab();
+  }
+
+  // ======================== Abas (Tabs) ========================
+  
+  switchTab(tabName) {
+    this.activeTab = tabName;
+    document.querySelectorAll('.editor-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tabName);
+    });
+    this.filterPagesByTab();
+    
+    // Selecionar primeira página visível se a ativa não pertence à aba
+    const activePage = this.getActivePage();
+    if (activePage) {
+      const belongsToTab = tabName === 'sankhya' ? activePage.fromQueue : !activePage.fromQueue;
+      if (!belongsToTab) {
+        const firstVisible = this.pages.find(p => tabName === 'sankhya' ? p.fromQueue : !p.fromQueue);
+        if (firstVisible) this.setActivePage(firstVisible.id);
+      }
+    } else {
+      const firstVisible = this.pages.find(p => tabName === 'sankhya' ? p.fromQueue : !p.fromQueue);
+      if (firstVisible) this.setActivePage(firstVisible.id);
+    }
+  }
+  
+  filterPagesByTab() {
+    const container = document.getElementById('pages-container');
+    if (!container) return;
+    
+    // Mostrar/esconder grupo-wrappers baseado na aba ativa
+    container.querySelectorAll('.sku-group-wrapper').forEach(gw => {
+      const groupId = parseInt(gw.dataset.groupId);
+      const groupPages = this.pages.filter(p => p.groupId === groupId);
+      
+      if (groupPages.length === 0) {
+        gw.style.display = 'none';
+        return;
+      }
+      
+      const mainPage = groupPages.find(p => p.variantIndex === 0) || groupPages[0];
+      const belongsToTab = this.activeTab === 'sankhya' ? mainPage.fromQueue : !mainPage.fromQueue;
+      gw.style.display = belongsToTab ? '' : 'none';
+    });
+    
+    // Atualizar as insert-zones visíveis baseadas na aba
+    this.cleanupInsertZones();
+    
+    // Mostrar/esconder botão Adicionar Página (só na aba Manual)
+    const addBtn = container.querySelector('.add-page-container');
+    if (addBtn) {
+      addBtn.style.display = this.activeTab === 'manual' ? '' : 'none';
+    }
+
+    // Sincronizar botões de ação e botão mágico
+    this.pages.forEach(p => this.updatePageActionButtons(p.id));
+    this.updateMagicProcessButton();
+  }
+
+  updatePageActionButtons(pageId) {
+    const page = this.getPage(pageId);
+    if (!page) return;
+    const wrapper = document.querySelector(`.page-wrapper[data-page-id="${pageId}"]`);
+    if (!wrapper) return;
+    
+    const btnValidate = wrapper.querySelector('.btn-validate-only');
+    const btnAll = wrapper.querySelector('.btn-export-page-all');
+    
+    const isFromQueue = !!page.fromQueue;
+    
+    if (btnValidate) {
+      btnValidate.style.display = isFromQueue ? 'flex' : 'none';
+    }
+    
+    if (btnAll) {
+      if (isFromQueue) {
+        btnAll.innerHTML = `<i data-lucide="zap" style="width:13px;height:13px; fill: white;"></i> Salvar e Validar`;
+      } else {
+        btnAll.innerHTML = `<i data-lucide="save" style="width:13px;height:13px;"></i> Salvar`;
+      }
+      if (window.lucide) window.lucide.createIcons();
+    }
+  }
+
+  updateMagicProcessButton() {
+    const btn = document.getElementById('btn-magic-process');
+    if (!btn) return;
+    const isManual = this.activeTab === 'manual';
+    if (isManual) {
+      btn.innerHTML = `<i data-lucide="save" style="width:14px;height:14px;"></i> Salvar Tudo`;
+    } else {
+      btn.innerHTML = `<i data-lucide="zap" style="width:14px;height:14px; fill: white;"></i> Salvar Tudo e Validar`;
+    }
+    if (window.lucide) window.lucide.createIcons();
+  }
+  
+  clearPage(pageId) {
+    const page = this.getPage(pageId);
+    if (!page) return;
+    
+    page.sku = '';
+    page.productName = '';
+    page.brand = '';
+    page.descriptionOriginal = '';
+    page.description = '';
+    page.originalImage = null;
+    page.currentImage = null;
+    page.adjustments = { ...this.defaultAdjustments };
+    page.transform = { ...this.defaultTransform };
+    page.history = [];
+    page.historyIndex = -1;
+    page.hasChanges = false;
+    page.referenceImage = null;
+    page.warehouseAddresses = null;
+    page.altPhotoCount = 0;
+    page._freshSankhyaLoaded = false;
+    page._bgRemoved = false;
+    page._imageBeforeBgRemoval = null;
+    page._isUpscaled = false;
+    page._upscaledImage = null;
+    page.ocrImageBase64 = null;
+    
+    // Resetar DOM
+    const wrapper = document.querySelector(`.page-wrapper[data-page-id="${pageId}"]`);
+    if (wrapper) {
+      const skuInput = wrapper.querySelector('.page-sku-input');
+      if (skuInput) skuInput.value = '';
+    }
+    
+    if (page.canvas) {
+      const ctx = page.canvas.getContext('2d');
+      page.canvas.width = 600;
+      page.canvas.height = 600;
+      ctx.clearRect(0, 0, 600, 600);
+    }
+    
+    this.syncSidebarSliders();
+    this.syncSidebarDescription();
+    this.syncRemoveBgButton();
+    this.updatePageHeader(page);
+    
+    if (window.app) window.app.showToast('Página limpa!', 'info');
+  }
+  
+  updateTabBadge() {
+    const badge = document.getElementById('tab-sankhya-badge');
+    if (!badge) return;
+    const count = this.pages.filter(p => p.fromQueue).length;
+    if (count > 0) {
+      badge.textContent = count;
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
     }
   }
 
@@ -181,7 +360,7 @@ class Editor {
     return this.nextPageId++;
   }
 
-  createPage(imageData = null) {
+  createPage(imageData = null, insertBeforeGroupId = null) {
     const pageId = this.getNextId();
     const page = {
       id: pageId,
@@ -204,9 +383,26 @@ class Editor {
       groupId: pageId,
     };
     
-    this.pages.push(page);
-    this.renderPageDOM(page);
+    // Inserir na posição exata antes do grupo alvo ou no final
+    if (insertBeforeGroupId) {
+      const targetIdx = this.pages.findIndex(p => p.groupId === insertBeforeGroupId || p.id === insertBeforeGroupId);
+      if (targetIdx !== -1) {
+        this.pages.splice(targetIdx, 0, page);
+      } else {
+        this.pages.push(page);
+      }
+    } else {
+      this.pages.push(page);
+    }
+
+    const container = document.getElementById('pages-container');
+    const insertBeforeEl = (container && insertBeforeGroupId) 
+      ? container.querySelector(`.sku-group-wrapper[data-group-id="${insertBeforeGroupId}"]`) 
+      : null;
+
+    this.renderPageDOM(page, false, insertBeforeEl);
     this.setActivePage(pageId);
+    this.updateAllPageNumbers();
     
     document.body.classList.toggle('has-multiple-pages', this.pages.length > 1);
     
@@ -219,6 +415,8 @@ class Editor {
     if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
       window.app.updateStatusBarQueueCount();
     }
+    this.filterPagesByTab();
+    this.updateTabBadge();
     
     return pageId;
   }
@@ -261,6 +459,7 @@ class Editor {
     if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
       window.app.updateStatusBarQueueCount();
     }
+    this.updateTabBadge();
     
     return pageId;
   }
@@ -322,7 +521,7 @@ class Editor {
     return pageId;
   }
 
-  renderPageDOM(page, prepend = false) {
+  renderPageDOM(page, prepend = false, insertBeforeElement = null) {
     const container = document.getElementById('pages-container');
     const addBtn = container.querySelector('.add-page-container');
     
@@ -353,7 +552,9 @@ class Editor {
       groupWrapper.appendChild(groupContainer);
       groupWrapper.appendChild(btnNext);
       
-      if (prepend && container.firstElementChild && container.firstElementChild !== addBtn) {
+      if (insertBeforeElement) {
+        container.insertBefore(groupWrapper, insertBeforeElement);
+      } else if (prepend && container.firstElementChild && container.firstElementChild !== addBtn) {
         container.insertBefore(groupWrapper, container.firstElementChild);
       } else {
         container.insertBefore(groupWrapper, addBtn);
@@ -422,11 +623,13 @@ class Editor {
                 <button class="btn-export-page" data-page-id="${page.id}" data-export-type="tabloide" style="margin: 0; padding: 0 12px; font-size: 11px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; border-right: 1px solid rgba(255,255,255,0.08); border-radius: 0; color: var(--text-secondary); cursor: pointer; transition: background 0.2s, color 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.08)'; this.style.color='#fff';" onmouseout="this.style.background='transparent'; this.style.color='var(--text-secondary)';">
                   Alternativas
                 </button>
-                <button class="btn-export-page btn-validate-only" data-page-id="${page.id}" data-export-type="validate_only" style="margin: 0; padding: 0 12px; font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 4px; border: none; border-right: 1px solid rgba(255,255,255,0.12); border-radius: 0; background: #ea580c; color: white; font-weight: bold; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#f97316'" onmouseout="this.style.background='#ea580c'" title="Somente validar no Sankhya pelo marketing no estado atual">
+                ${page.fromQueue ? `
+                <button class="btn-export-page btn-validate-only" data-page-id="${page.id}" data-export-type="validate_only" style="margin: 0; padding: 0 12px; font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 4px; border: none; border-right: 1px solid rgba(255,255,255,0.12); border-radius: 0; background: #ea580c; color: white; font-weight: bold; cursor: pointer; transition: background 0.2s; white-space: nowrap;" onmouseover="this.style.background='#f97316'" onmouseout="this.style.background='#ea580c'" title="Somente validar no Sankhya pelo marketing no estado atual">
                   <i data-lucide="check" style="width:13px;height:13px;"></i> Validar
                 </button>
-                <button class="btn-export-page btn-export-page-all" data-page-id="${page.id}" data-export-type="all" style="margin: 0; padding: 0 14px; font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 5px; border: none; border-radius: 0; background: linear-gradient(90deg, #8B5CF6, #3B82F6); color: white; font-weight: bold; cursor: pointer; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
-                  <i data-lucide="zap" style="width:13px;height:13px; fill: white;"></i> Salvar e Validar
+                ` : ''}
+                <button class="btn-export-page btn-export-page-all" data-page-id="${page.id}" data-export-type="all" style="margin: 0; padding: 0 14px; font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 5px; border: none; border-radius: 0; background: linear-gradient(90deg, #8B5CF6, #3B82F6); color: white; font-weight: bold; cursor: pointer; transition: opacity 0.2s; white-space: nowrap;" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+                  <i data-lucide="${page.fromQueue ? 'zap' : 'save'}" style="width:13px;height:13px; fill: white;"></i> ${page.fromQueue ? 'Salvar e Validar' : 'Salvar'}
                 </button>
               </div>
             </div>
@@ -578,6 +781,7 @@ class Editor {
     
     this.syncSidebarSliders();
     this.syncSidebarDescription();
+    this.syncRemoveBgButton();
 
     // Só busca no Sankhya se ainda não carregou os dados nesta sessão
     const page = this.getPage(pageId);
@@ -614,22 +818,22 @@ class Editor {
       }
     });
 
-    // 3. Adiciona EXATAMENTE UMA insert-zone entre cada card consecutivo
-    const groups = Array.from(container.querySelectorAll('.sku-group-wrapper'));
-    for (let i = 0; i < groups.length - 1; i++) {
-      const currentGroup = groups[i];
-      const nextGroup = groups[i + 1];
+    // 0. Na fila do Sankhya, NÃO insere botões '+' entre os cards!
+    if (this.activeTab !== 'manual') {
+      return;
+    }
+
+    // 3. Adiciona EXATAMENTE UMA insert-zone entre cada card consecutivo visível (somente na aba manual)
+    const visibleGroups = Array.from(container.querySelectorAll('.sku-group-wrapper')).filter(gw => gw.style.display !== 'none');
+    for (let i = 0; i < visibleGroups.length - 1; i++) {
+      const nextGroup = visibleGroups[i + 1];
+      const nextGroupId = parseInt(nextGroup.dataset.groupId);
 
       const insertZone = document.createElement('div');
       insertZone.className = 'page-insert-zone';
       insertZone.title = 'Inserir página em branco aqui';
       insertZone.addEventListener('click', () => {
-        const newPageId = this.createPage();
-        const newGroupWrapper = container.querySelector(`.sku-group-wrapper[data-group-id="${newPageId}"]`);
-        if (newGroupWrapper) {
-          container.insertBefore(newGroupWrapper, insertZone);
-          this.cleanupInsertZones();
-        }
+        this.createPage(null, nextGroupId);
       });
 
       container.insertBefore(insertZone, nextGroup);
@@ -658,6 +862,7 @@ class Editor {
     this.ensureBlankPage();
     this.cleanupInsertZones();
     this.updateAllPageNumbers();
+    this.filterPagesByTab();
 
     // Ativar a próxima página de produto disponível ou a página em branco padrão
     if (this.pages.length > 0) {
@@ -674,10 +879,24 @@ class Editor {
   }
 
   deletePage(pageId) {
+    const page = this.getPage(pageId);
+    if (!page) return;
+    
+    // Na aba Manual: se for a última página manual, limpa em vez de remover
+    if (!page.fromQueue) {
+      const manualPages = this.pages.filter(p => !p.fromQueue);
+      if (manualPages.length <= 1) {
+        this.clearPage(pageId);
+        return;
+      }
+    }
+    
+    // Proteção geral: pelo menos 1 página total
     if (this.pages.length <= 1) {
-      if (window.app) window.app.showToast('Precisa ter pelo menos 1 página', 'warning');
+      this.clearPage(pageId);
       return;
     }
+    
     const idx = this.pages.findIndex(p => p.id === pageId);
     if (idx === -1) return;
     this.pages.splice(idx, 1);
@@ -692,13 +911,24 @@ class Editor {
     this.cleanupInsertZones();
     
     if (this.activePageId === pageId) {
-      this.setActivePage(this.pages[Math.min(idx, this.pages.length - 1)].id);
+      // Selecionar a próxima página da mesma aba
+      const tabPages = this.pages.filter(p => this.activeTab === 'sankhya' ? p.fromQueue : !p.fromQueue);
+      if (tabPages.length > 0) {
+        this.setActivePage(tabPages[Math.min(idx, tabPages.length - 1)].id);
+      } else if (this.pages.length > 0) {
+        this.setActivePage(this.pages[0].id);
+      }
     }
     document.body.classList.toggle('has-multiple-pages', this.pages.length > 1);
     this.triggerAutosave(true);
+    this.updateTabBadge();
     if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
       window.app.updateStatusBarQueueCount();
     }
+  }
+  
+  closePage(pageId) {
+    this.deletePage(pageId);
   }
   
   movePage(pageId, direction) {
@@ -1494,32 +1724,51 @@ class Editor {
   }
 
   /**
-   * Remove apenas o fundo branco externo preservando 100% da embalagem/cartela.
+   * Remove o fundo preservando 100% da embalagem/cartela via BiRefNet.
    */
   async removeBackgroundPackaging(pageId = null) {
     const page = pageId ? this.getPage(pageId) : this.getActivePage();
     if (!page || !page.currentImage || page._isProcessing) return;
 
+    // Salvar imagem antes da remoção para possibilitar desfazer
+    page._imageBeforeBgRemoval = page.currentImage;
+
     page._isProcessing = true;
     page._abortOperation = false;
-    this.showPageOverlay(page.id, 'Removendo fundo da embalagem', 'Preservando cartela e textos...');
+    
+    this.showPageOverlay(page.id, 'Removendo fundo da embalagem', 'Preservando cartela e textos via BiRefNet...', () => {
+      page._abortOperation = true;
+      page._isProcessing = false;
+      this.hidePageOverlay(page.id);
+      this.fitAndCenterImage(page.id);
+      if (window.app) window.app.showToast('Remoção cancelada. Imagem mantida.', 'info');
+    }, 'Cancelar Remoção (Manter Imagem)');
 
     try {
       const sourceImage = page._upscaledImage || page.originalImage || page.currentImage;
-      const res = await window.api.image.removeWhiteBg(sourceImage.src);
+      const res = await window.api.image.removeBgChroma({ base64Data: sourceImage.src });
+
+      if (page._abortOperation) {
+        page._isProcessing = false;
+        this.hidePageOverlay(page.id);
+        return;
+      }
 
       if (res && res.base64) {
         const newImg = new Image();
         newImg.onload = () => {
+          if (page._abortOperation) return;
           page.currentImage = newImg;
           page.originalImage = newImg;
           page._hasTransparency = true;
+          page._bgRemoved = true;
           page.canvas.width = newImg.width;
           page.canvas.height = newImg.height;
           page.transform = { zoom: 1, posX: 0, posY: 0, rotation: 0 };
           this.pushHistory(page.id);
           this.renderPage(page.id);
           this.syncSidebarSliders();
+          this.syncRemoveBgButton();
           page._isProcessing = false;
           this.hidePageOverlay(page.id);
           this.triggerAutosave(true);
@@ -1543,27 +1792,13 @@ class Editor {
     }
   }
 
+
   async removeBackground(pageId = null, force = false) {
     const page = pageId ? this.getPage(pageId) : this.getActivePage();
     if (!page || !page.currentImage || page._isProcessing) return;
 
-    // Se não for forçado, verificar automaticamente se é embalagem/cartela
-    if (!force && window.api?.image?.detectMode) {
-      try {
-        const targetApiKey = window._settingsManager?.settings?.geminiApiKey || '';
-        const detectRes = await window.api.image.detectMode({
-          base64Data: page.currentImage.src,
-          productName: page.productName || '',
-          apiKey: targetApiKey
-        });
-        if (detectRes && detectRes.mode === 'packaging') {
-          if (window.app) window.app.showToast('Embalagem detectada: preservando cartela e textos!', 'info');
-          return this.removeBackgroundPackaging(page.id);
-        }
-      } catch (detectErr) {
-        console.warn('Detecção automática de modo falhou, seguindo fluxo normal:', detectErr);
-      }
-    }
+    // Salvar imagem antes da remoção para possibilitar desfazer
+    page._imageBeforeBgRemoval = page.currentImage;
 
     page._isProcessing = true;
     page._abortOperation = false;
@@ -1615,11 +1850,13 @@ class Editor {
         page.currentImage = newImg;
         page.canvas.width = newImg.width;
         page.canvas.height = newImg.height;
+        page._bgRemoved = true;
         this.pushHistory(page.id);
         this.renderPage(page.id);
         page._isProcessing = false;
         this.hidePageOverlay(page.id);
-        this.triggerAutosave(true); // Salva imediatamente
+        this.triggerAutosave(true);
+        this.syncRemoveBgButton();
         if (window.app) window.app.showToast('Fundo removido com sucesso!', 'success');
       };
       newImg.onerror = () => {
@@ -1634,6 +1871,189 @@ class Editor {
       page._isProcessing = false;
       this.hidePageOverlay(page.id);
     }
+  }
+  
+  undoRemoveBackground(pageId = null) {
+    const page = pageId ? this.getPage(pageId) : this.getActivePage();
+    if (!page || !page._imageBeforeBgRemoval) return;
+    
+    page.currentImage = page._imageBeforeBgRemoval;
+    page.canvas.width = page.currentImage.width;
+    page.canvas.height = page.currentImage.height;
+    page._bgRemoved = false;
+    page._imageBeforeBgRemoval = null;
+    this.pushHistory(page.id);
+    this.renderPage(page.id);
+    this.syncRemoveBgButton();
+    this.fitAndCenterImage(page.id);
+    if (window.app) window.app.showToast('Remoção de fundo desfeita!', 'info');
+  }
+  
+  syncRemoveBgButton() {
+    const page = this.getActivePage();
+    const btn = document.getElementById('btn-remove-bg-manual');
+    if (!btn) return;
+    
+    if (page && page._bgRemoved) {
+      btn.innerHTML = '<i data-lucide="undo-2" style="width:13px;height:13px;"></i> Desfazer Remoção';
+      btn.title = 'Restaurar a imagem antes da remoção de fundo';
+      btn.classList.add('btn-undo-bg');
+    } else {
+      btn.innerHTML = '<i data-lucide="scissors" style="width:13px;height:13px;"></i> Remover Fundo';
+      btn.title = 'Remover fundo da imagem atual (detecção inteligente)';
+      btn.classList.remove('btn-undo-bg');
+    }
+    this._debouncedLucide();
+  }
+  
+  // ======================== Varinha Mágica (Magic Wand) ========================
+  
+  toggleMagicWand() {
+    this._magicWandActive = !this._magicWandActive;
+    const btn = document.getElementById('btn-magic-wand');
+    
+    if (this._magicWandActive) {
+      if (btn) btn.classList.add('active');
+      document.querySelectorAll('.page-canvas').forEach(c => {
+        c.style.cursor = 'crosshair';
+      });
+      this._magicWandHandler = (e) => this._onMagicWandClick(e);
+      document.getElementById('pages-container')?.addEventListener('click', this._magicWandHandler);
+      if (window.app) window.app.showToast('Varinha Mágica ativada! Clique na área que deseja remover.', 'info');
+    } else {
+      if (btn) btn.classList.remove('active');
+      document.querySelectorAll('.page-canvas').forEach(c => {
+        c.style.cursor = '';
+      });
+      if (this._magicWandHandler) {
+        document.getElementById('editor-pages-container')?.removeEventListener('click', this._magicWandHandler);
+        this._magicWandHandler = null;
+      }
+    }
+  }
+  
+  _onMagicWandClick(e) {
+    const canvas = e.target;
+    if (!canvas || canvas.tagName !== 'CANVAS') return;
+    
+    const wrapper = canvas.closest('.page-wrapper');
+    if (!wrapper) return;
+    
+    const pageId = parseInt(wrapper.dataset.pageId);
+    if (!pageId) return;
+    
+    const page = this.getPage(pageId);
+    if (!page || !page.currentImage || page._isProcessing) return;
+    
+    // Coordenadas do clique relativas ao canvas CSS
+    const rect = canvas.getBoundingClientRect();
+    const cssX = e.clientX - rect.left;
+    const cssY = e.clientY - rect.top;
+    
+    // Escalar de coordenadas CSS para coordenadas de pixel do canvas
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const canvasX = cssX * scaleX;
+    const canvasY = cssY * scaleY;
+    
+    // Reverter a transformação para obter coordenadas da imagem original
+    const { zoom = 1, posX = 0, posY = 0, rotation = 0 } = page.transform;
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const rad = -(rotation * Math.PI) / 180;
+    
+    let tx = canvasX - (cw / 2 + posX);
+    let ty = canvasY - (ch / 2 + posY);
+    let rx = tx * Math.cos(rad) - ty * Math.sin(rad);
+    let ry = tx * Math.sin(rad) + ty * Math.cos(rad);
+    let imgX = Math.round(rx / zoom + cw / 2);
+    let imgY = Math.round(ry / zoom + ch / 2);
+    
+    // Verificar limites
+    const imgW = page.currentImage.naturalWidth || page.currentImage.width;
+    const imgH = page.currentImage.naturalHeight || page.currentImage.height;
+    if (imgX < 0 || imgX >= imgW || imgY < 0 || imgY >= imgH) {
+      if (window.app) window.app.showToast('Clique dentro da imagem!', 'warning');
+      return;
+    }
+    
+    this._executeFloodFill(page, imgX, imgY, 40);
+  }
+  
+  _executeFloodFill(page, startX, startY, tolerance = 40) {
+    const tempCanvas = document.createElement('canvas');
+    const imgW = page.currentImage.naturalWidth || page.currentImage.width;
+    const imgH = page.currentImage.naturalHeight || page.currentImage.height;
+    tempCanvas.width = imgW;
+    tempCanvas.height = imgH;
+    const ctx = tempCanvas.getContext('2d');
+    ctx.drawImage(page.currentImage, 0, 0);
+    
+    const imageData = ctx.getImageData(0, 0, imgW, imgH);
+    const data = imageData.data;
+    const w = imgW;
+    const h = imgH;
+    
+    // Cor do pixel clicado
+    const idx = (startY * w + startX) * 4;
+    const targetR = data[idx];
+    const targetG = data[idx + 1];
+    const targetB = data[idx + 2];
+    const targetA = data[idx + 3];
+    
+    if (targetA === 0) {
+      if (window.app) window.app.showToast('Essa área já é transparente!', 'info');
+      return;
+    }
+    
+    // Flood fill via DFS (stack) — performance otimizada
+    const visited = new Uint8Array(w * h);
+    const stack = [startX + startY * w];
+    visited[startX + startY * w] = 1;
+    let removedCount = 0;
+    
+    while (stack.length > 0) {
+      const pos = stack.pop();
+      const px = pos % w;
+      const py = (pos - px) / w;
+      const pi = pos * 4;
+      
+      if (data[pi + 3] === 0) continue;
+      
+      const dr = data[pi] - targetR;
+      const dg = data[pi + 1] - targetG;
+      const db = data[pi + 2] - targetB;
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+      
+      if (dist <= tolerance) {
+        data[pi + 3] = 0; // Tornar transparente
+        removedCount++;
+        
+        // Vizinhos 4-conectados
+        if (px > 0 && !visited[pos - 1]) { visited[pos - 1] = 1; stack.push(pos - 1); }
+        if (px < w - 1 && !visited[pos + 1]) { visited[pos + 1] = 1; stack.push(pos + 1); }
+        if (py > 0 && !visited[pos - w]) { visited[pos - w] = 1; stack.push(pos - w); }
+        if (py < h - 1 && !visited[pos + w]) { visited[pos + w] = 1; stack.push(pos + w); }
+      }
+    }
+    
+    if (removedCount === 0) {
+      if (window.app) window.app.showToast('Nenhum pixel similar encontrado nessa região.', 'info');
+      return;
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
+    
+    const newImg = new Image();
+    newImg.onload = () => {
+      page.currentImage = newImg;
+      page.canvas.width = newImg.width;
+      page.canvas.height = newImg.height;
+      this.pushHistory(page.id);
+      this.renderPage(page.id);
+      if (window.app) window.app.showToast(`${removedCount.toLocaleString()} pixels removidos!`, 'success');
+    };
+    newImg.src = tempCanvas.toDataURL('image/png');
   }
   
   // ======================== History ========================
@@ -1756,19 +2176,18 @@ class Editor {
       }
       if (divActionButtons) divActionButtons.style.display = 'none';
       this._updateProductRefCard(null);
+      this._updateProductInfoPanel(null);
       this._debouncedLucide();
       return;
     }
     
     this._updateProductRefCard(page);
+    this._updateProductInfoPanel(page);
     
     if (indicator) {
-      let mainPageId = page.id;
       let pageNum = this.getPageDisplayNumber(page);
       let label = `Página ${pageNum}`;
       if (page.sku) label += ` - ${page.sku}`;
-      if (page.productName) label += ` - ${page.productName}`;
-      if (page.brand) label += ` | ${page.brand}`;
       indicator.textContent = label;
     }
     if (textareaOriginal) textareaOriginal.value = page.descriptionOriginal || '';
@@ -2005,9 +2424,35 @@ class Editor {
         }
       }
       
-      // Buscar imagem de referencia se ainda não tiver
-      if (!page.referenceImage) {
-        try { await this._fetchProductImage(page, sku, settings); } catch(e) { /* silencioso */ }
+      // Buscar imagem de referência SEMPRE fresca do Sankhya (sem cache)
+      try { await this._fetchProductImage(page, sku, settings); } catch(e) { /* silencioso */ }
+      
+      // Buscar endereço no CD
+      try {
+        if (window.api?.sankhya?.getWarehouseAddress) {
+          const whResult = await window.api.sankhya.getWarehouseAddress({
+            sku, secret: settings.sankhyaSecret, token: settings.sankhyaToken,
+            environment: settings.sankhyaEnvironment || 'sandbox', clientId: settings.sankhyaClientId
+          });
+          page.warehouseAddresses = whResult?.addresses || [];
+        }
+      } catch(e) { console.error('Erro warehouse:', e); }
+      
+      // Buscar status do produto (fotos alternativas)
+      try {
+        if (window.api?.sankhya?.getProductStatus) {
+          const statusResult = await window.api.sankhya.getProductStatus({
+            sku, secret: settings.sankhyaSecret, token: settings.sankhyaToken,
+            environment: settings.sankhyaEnvironment || 'sandbox', clientId: settings.sankhyaClientId
+          });
+          page.altPhotoCount = statusResult?.altCount || 0;
+        }
+      } catch(e) { console.error('Erro product status:', e); }
+      
+      // Atualizar painel de informações se for a página ativa
+      const activeMainForInfo = this.getActiveMainPage();
+      if (activeMainForInfo && activeMainForInfo.id === page.id) {
+        this._updateProductInfoPanel(page);
       }
       
     } catch (err) {
@@ -2158,6 +2603,66 @@ class Editor {
     }
   }
   
+  _updateProductInfoPanel(page) {
+    const panel = document.getElementById('product-info-panel');
+    if (!panel) return;
+    
+    if (!page || !page.sku) {
+      panel.style.display = 'none';
+      return;
+    }
+    
+    panel.style.display = 'block';
+    this._updateProductWarehouse(page);
+    this._updateProductValidations(page);
+    this._debouncedLucide();
+  }
+  
+  _updateProductWarehouse(page) {
+    const warehouseDiv = document.getElementById('product-warehouse');
+    const addressesDiv = document.getElementById('warehouse-addresses');
+    if (!warehouseDiv || !addressesDiv) return;
+    
+    if (page.warehouseAddresses && page.warehouseAddresses.length > 0) {
+      warehouseDiv.style.display = 'block';
+      addressesDiv.innerHTML = page.warehouseAddresses.map(addr => 
+        `<span style="background: rgba(59,130,246,0.15); color: #60A5FA; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px;">${addr}</span>`
+      ).join('');
+    } else {
+      warehouseDiv.style.display = 'none';
+      addressesDiv.innerHTML = '';
+    }
+  }
+  
+  _updateProductValidations(page) {
+    const originEl = document.getElementById('validation-origin');
+    const mainPhotoEl = document.getElementById('validation-main-photo');
+    const altPhotosEl = document.getElementById('validation-alt-photos');
+    if (!originEl || !mainPhotoEl || !altPhotosEl) return;
+    
+    // Origem: Sankhya (Fila) ou Manual
+    if (page.fromQueue) {
+      originEl.innerHTML = '<span style="color: #3B82F6;">🔄</span> <span style="color: var(--text-secondary);">Origem:</span> <span style="color: #60A5FA; font-weight: 600;">Sankhya (Fila)</span>';
+    } else {
+      originEl.innerHTML = '<span style="color: #F59E0B;">✏️</span> <span style="color: var(--text-secondary);">Origem:</span> <span style="color: #FBBF24; font-weight: 600;">Manual</span>';
+    }
+    
+    // Foto principal
+    if (page.referenceImage) {
+      mainPhotoEl.innerHTML = '<span style="color: #22C55E;">✅</span> <span style="color: var(--text-secondary);">Foto principal:</span> <span style="color: #4ADE80; font-weight: 600;">Sim</span>';
+    } else {
+      mainPhotoEl.innerHTML = '<span style="color: #EF4444;">❌</span> <span style="color: var(--text-secondary);">Foto principal:</span> <span style="color: #F87171; font-weight: 600;">Não</span>';
+    }
+    
+    // Fotos alternativas
+    const altCount = page.altPhotoCount || 0;
+    if (altCount > 0) {
+      altPhotosEl.innerHTML = `<span style="color: #22C55E;">📸</span> <span style="color: var(--text-secondary);">Fotos alternativas:</span> <span style="color: #4ADE80; font-weight: 600;">${altCount}</span>`;
+    } else {
+      altPhotosEl.innerHTML = '<span style="color: #F59E0B;">📸</span> <span style="color: var(--text-secondary);">Fotos alternativas:</span> <span style="color: #FBBF24; font-weight: 600;">0</span>';
+    }
+  }
+  
   setBgColor(color) {
     this._bgColor = color;
     document.documentElement.style.setProperty('--page-bg-color', color);
@@ -2243,6 +2748,11 @@ class Editor {
     document.getElementById('btn-add-page')?.addEventListener('click', () => {
       this.createPage();
       this._debouncedLucide();
+    });
+    
+    // Abas Manual / Sankhya
+    document.querySelectorAll('.editor-tab').forEach(tab => {
+      tab.addEventListener('click', () => this.switchTab(tab.dataset.tab));
     });
     
     document.getElementById('btn-add-variant')?.addEventListener('click', () => {

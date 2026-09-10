@@ -47,6 +47,7 @@ class App {
 
     // Inicializar ícones e métricas da barra de status
     if (window.lucide) window.lucide.createIcons();
+    this.editor.updateMagicProcessButton();
     this.updateStatusBarQueueCount();
   }
 
@@ -613,26 +614,32 @@ class App {
   async _processarTudo() {
     this._isProcessingAll = true;
     this._cancelProcessarTudo = false;
-    // 1. Encontrar todos os SKUs que possuem alterações (hasChanges = true)
-    const skusToProcess = [...new Set(this.editor.pages.filter(p => p.hasChanges && p.sku).map(p => p.sku))];
+    const isManualTab = this.editor.activeTab === 'manual';
+    // 1. Encontrar todos os SKUs da aba ativa que possuem alterações (hasChanges = true)
+    const activePages = this.editor.pages.filter(p => isManualTab ? !p.fromQueue : p.fromQueue);
+    const skusToProcess = [...new Set(activePages.filter(p => p.hasChanges && p.sku).map(p => p.sku))];
     
     if (skusToProcess.length === 0) {
-      this.showToast('Nenhum item modificado para salvar e validar.', 'warning');
+      this.showToast(isManualTab ? 'Nenhum item modificado para salvar.' : 'Nenhum item modificado para salvar e validar.', 'warning');
       return;
     }
 
-    if (!confirm(`Deseja exportar as fotos, salvar e concluir a validação de ${skusToProcess.length} produto(s) modificado(s)?`)) {
+    const confirmMsg = isManualTab
+      ? `Deseja exportar as fotos e salvar ${skusToProcess.length} produto(s) modificado(s)?`
+      : `Deseja exportar as fotos, salvar e concluir a validação de ${skusToProcess.length} produto(s) modificado(s)?`;
+
+    if (!confirm(confirmMsg)) {
       return;
     }
 
-    this.showToast(`Iniciando automação para ${skusToProcess.length} produto(s)...`, 'info');
+    this.showToast(`Iniciando salvamento para ${skusToProcess.length} produto(s)...`, 'info');
 
     const settings = this.settingsManager?.settings;
     if (!settings?.sankhyaSecret || !settings?.sankhyaToken) {
       this.showToast('Credenciais do Sankhya não configuradas.', 'error');
       return;
     }
-    if (!settings?.sankhyaQueueField || !settings?.sankhyaQueueValue) {
+    if (!isManualTab && (!settings?.sankhyaQueueField || !settings?.sankhyaQueueValue)) {
       this.showToast('Campos de Conclusão MKT não configurados.', 'error');
       return;
     }
@@ -724,9 +731,10 @@ class App {
               });
             }
           }
-                } catch (apiErr) {
-          console.warn('Aviso upload foto principal:', apiErr);
-          this.showToast('Foto principal do SKU ' + currentSku + ' sera atualizada na proxima tentativa', 'warning');
+        } catch (apiErr) {
+          console.error('Erro upload foto principal:', apiErr);
+          this.showToast('Erro crítico na foto principal do SKU ' + currentSku + ': ' + apiErr.message, 'error');
+          throw apiErr; // Aborta e impede de dar como concluído
         }
 
         // Passo 4: Registrar imagens alternativas na TGFIMAL
@@ -755,16 +763,20 @@ class App {
           });
         }
 
-        // Passo 6: Validar MKT
-        await window.api.sankhya.markMarketingValidated({
-          sku: currentSku,
-          secret: settings.sankhyaSecret,
-          token: settings.sankhyaToken,
-          environment: env,
-          clientId: settings.sankhyaClientId,
-          queueField: settings.sankhyaQueueField,
-          queueValue: settings.sankhyaQueueValue
-        });
+        // Passo 6: Validar MKT (somente se for item da fila Sankhya)
+        const isFromQueue = skuPages.some(p => p.fromQueue);
+        if (isFromQueue && settings.sankhyaQueueField && settings.sankhyaQueueValue) {
+          await window.api.sankhya.markMarketingValidated({
+            sku: currentSku,
+            secret: settings.sankhyaSecret,
+            token: settings.sankhyaToken,
+            environment: env,
+            clientId: settings.sankhyaClientId,
+            queueField: settings.sankhyaQueueField,
+            queueValue: settings.sankhyaQueueValue,
+            codUsu: settings.sankhyaCodUsu || ''
+          });
+        }
 
         // Concluído para este SKU
         const skuItem = document.querySelector(`.sku-item[data-sku="${currentSku}"]`);
@@ -810,7 +822,7 @@ class App {
 
     this.setProgress(100, 'Concluído');
     setTimeout(() => this.setProgress(null), 2500);
-    this.showToast(`Automação concluída para ${skusToProcess.length} produto(s)!`, 'success');
+    this.showToast(isManualTab ? `Salvo com sucesso para ${skusToProcess.length} produto(s)!` : `Automação concluída para ${skusToProcess.length} produto(s)!`, 'success');
     
     // Garantir que sempre existe pelo menos 1 pagina em branco
     if (this.editor.pages.length === 0 || !this.editor.pages.some(p => !p.sku)) {
@@ -843,22 +855,22 @@ class App {
     
     const env = settings.sankhyaEnvironment || 'sandbox';
     const label = tipo === 'original' ? 'descrição editada' : 'descrição IA';
-    const envLabel = env === 'sandbox' ? '🧪 SANDBOX' : '🏭 PRODUÇÃO';
-    
-    if (!confirm(`Salvar ${label} no Sankhya (${envLabel})?\n\nSKU: ${page.sku}\nTexto (${texto.length} caracteres):\n${texto.substring(0, 200)}${texto.length > 200 ? '...' : ''}`)) {
-      return;
-    }
-    
     // Sincronizar texto
     if (tipo === 'original') page.descriptionOriginal = texto;
     else page.description = texto;
+    
+    // Adicionar "Atualizado em: DD/MM/AAAA" no rodapé da descrição
+    let textoFinal = texto.replace(/\n*Atualizado em: \d{2}\/\d{2}\/\d{4}$/m, '').trimEnd();
+    const hoje = new Date();
+    const dataFormatada = hoje.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    textoFinal += `\nAtualizado em: ${dataFormatada}`;
     
     this.showToast('Salvando no Sankhya...', 'info');
     
     try {
       const result = await window.api.sankhya.saveDescription({
         sku: page.sku,
-        description: texto,
+        description: textoFinal,
         secret: settings.sankhyaSecret,
         token: settings.sankhyaToken,
         environment: env,
@@ -904,7 +916,8 @@ class App {
         environment: settings.sankhyaEnvironment || 'sandbox',
         clientId: settings.sankhyaClientId,
         queueField: settings.sankhyaQueueField,
-        queueValue: settings.sankhyaQueueValue
+        queueValue: settings.sankhyaQueueValue,
+        codUsu: settings.sankhyaCodUsu || ''
       });
       
       this.showToast(`Produto ${page.sku} validado com sucesso!`, 'success');
@@ -1149,9 +1162,20 @@ class App {
       if (this.editor) this.editor.removeBackground();
     });
 
-    // Botão "Remover Fundo" na sidebar esquerda (Pincéis IA)
+    // Botão "Remover Fundo" / "Desfazer Remoção" na sidebar esquerda (Pincéis IA)
     document.getElementById('btn-remove-bg-manual')?.addEventListener('click', () => {
-      if (this.editor) this.editor.removeBackground();
+      if (!this.editor) return;
+      const page = this.editor.getActivePage();
+      if (page && page._bgRemoved) {
+        this.editor.undoRemoveBackground();
+      } else {
+        this.editor.removeBackground();
+      }
+    });
+
+    // Botão "Varinha Mágica" na barra vertical
+    document.getElementById('btn-magic-wand')?.addEventListener('click', () => {
+      if (this.editor) this.editor.toggleMagicWand();
     });
     
     document.getElementById('menu-remover-fundo-objeto')?.addEventListener('click', () => {
@@ -1273,7 +1297,8 @@ class App {
           environment: settings.sankhyaEnvironment || 'sandbox',
           clientId: settings.sankhyaClientId,
           queueField: settings.sankhyaQueueField,
-          queueValue: settings.sankhyaQueueValue
+          queueValue: settings.sankhyaQueueValue,
+          codUsu: settings.sankhyaCodUsu || ''
         });
         this.showToast(`Produto ${sku} validado com sucesso!`, 'success');
         setTimeout(() => {
@@ -1349,7 +1374,8 @@ class App {
         this.showToast('Imagem exportada localmente com sucesso!', 'success');
         return;
       }
-      await this.processSingleSku(sku, { main: true, alternatives: true, validate: true, removeFromEditor: true });
+      const shouldValidate = !!page.fromQueue;
+      await this.processSingleSku(sku, { main: true, alternatives: true, validate: shouldValidate, removeFromEditor: true });
     }
   }
 
@@ -1420,8 +1446,9 @@ class App {
           });
           this.showToast('Foto principal (300x300 JPG) atualizada no Sankhya!', 'success');
         } catch (mainErr) {
-          console.warn('Aviso upload foto principal:', mainErr);
+          console.error('Erro crítico ao atualizar foto principal:', mainErr);
           this.showToast('Erro ao atualizar foto principal: ' + mainErr.message, 'error');
+          throw mainErr; // Impede validação e remoção se a imagem principal falhou!
         }
       }
     }
@@ -1531,50 +1558,66 @@ class App {
     }
 
     // =========================================================================
-    // 3. SALVAR DESCRIÇÃO IA SE HOUVER (Apenas quando vai validar ou a pedido)
+    // 3. SALVAR DESCRIÇÃO IA SE HOUVER
     // =========================================================================
-    if (options.validate && mainPage && mainPage.description && mainPage.description.trim() !== '') {
+    const currentActive = this.editor.getActivePage();
+    const isMainActive = currentActive && (currentActive.id === mainPage.id || String(currentActive.sku).trim() === cleanSku);
+    const sidebarText = isMainActive ? (document.getElementById('textarea-descricao')?.value || '') : '';
+    const descToSave = (mainPage.description || sidebarText || '').trim();
+
+    if (descToSave !== '') {
+      mainPage.description = descToSave;
       try {
         await window.api.sankhya.saveDescription({
           sku: cleanSku,
-          description: mainPage.description,
+          description: descToSave,
           secret: settings.sankhyaSecret,
           token: settings.sankhyaToken,
           environment: env,
           clientId: settings.sankhyaClientId
         });
+        this.showToast(`Descrição do SKU ${cleanSku} salva no Sankhya!`, 'info');
       } catch (descErr) {
-        console.warn('Aviso salvar descrição:', descErr);
+        console.error('Erro ao salvar descrição:', descErr);
+        this.showToast('Erro ao salvar descrição: ' + descErr.message, 'error');
+        throw descErr;
       }
     }
 
     // =========================================================================
-    // 4. VALIDAR MKT NO SANKHYA E REMOVER DA TELA
+    // 4. VALIDAR MKT NO SANKHYA (Somente se options.validate for true)
     // =========================================================================
-    if (options.validate && settings.sankhyaQueueField && settings.sankhyaQueueValue) {
-      try {
-        await window.api.sankhya.markMarketingValidated({
-          sku: cleanSku,
-          secret: settings.sankhyaSecret,
-          token: settings.sankhyaToken,
-          environment: env,
-          clientId: settings.sankhyaClientId,
-          queueField: settings.sankhyaQueueField,
-          queueValue: settings.sankhyaQueueValue
-        });
-        this.showToast(`Produto ${cleanSku} VALIDADO com sucesso no Sankhya!`, 'success');
-
-        // Remover da tela sem deixar buraco!
-        if (options.removeFromEditor) {
-          setTimeout(() => {
-            this.editor.removeProduct(cleanSku);
-          }, 600);
+    if (options.validate) {
+      if (settings.sankhyaQueueField && settings.sankhyaQueueValue) {
+        try {
+          await window.api.sankhya.markMarketingValidated({
+            sku: cleanSku,
+            secret: settings.sankhyaSecret,
+            token: settings.sankhyaToken,
+            environment: env,
+            clientId: settings.sankhyaClientId,
+            queueField: settings.sankhyaQueueField,
+            queueValue: settings.sankhyaQueueValue,
+            codUsu: settings.sankhyaCodUsu || ''
+          });
+          this.showToast(`Produto ${cleanSku} VALIDADO com sucesso no Sankhya!`, 'success');
+        } catch (valErr) {
+          console.error('Erro validar marketing:', valErr);
+          this.showToast('Erro ao validar no Sankhya: ' + valErr.message, 'error');
+          return false;
         }
-      } catch (valErr) {
-        console.error('Erro validar marketing:', valErr);
-        this.showToast('Erro ao validar no Sankhya: ' + valErr.message, 'error');
-        return false;
       }
+    } else {
+      this.showToast(`Produto ${cleanSku} salvo com sucesso!`, 'success');
+    }
+
+    // =========================================================================
+    // 5. REMOVER DA TELA (se options.removeFromEditor for true)
+    // =========================================================================
+    if (options.removeFromEditor) {
+      setTimeout(() => {
+        this.editor.removeProduct(cleanSku);
+      }, 500);
     }
 
     return true;
@@ -2071,17 +2114,17 @@ class App {
       // Info
       const info = document.createElement('p');
       info.style.cssText = 'color:var(--text-secondary,#aaa);font-size:13px;margin-bottom:16px;';
-      info.textContent = 'Imagem atual: ' + res.width + 'x' + res.height + 'px (mínimo: ' + res.minW + 'x' + res.minH + 'px). Gerando 3 variações...';
+      info.textContent = 'Imagem atual: ' + res.width + 'x' + res.height + 'px (mínimo: ' + res.minW + 'x' + res.minH + 'px). Gerando 2 variações...';
       container.appendChild(info);
       
-      // Grid de 3 variações
+      // Grid de 2 variações
       const grid = document.createElement('div');
-      grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;';
+      grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px;';
       
       const cards = [];
-      const results = [null, null, null];
+      const results = [null, null];
       
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 2; i++) {
         const card = document.createElement('div');
         card.style.cssText = 'border:2px solid var(--border-color,#333);border-radius:8px;overflow:hidden;cursor:pointer;transition:all 0.2s;position:relative;';
         card.onmouseenter = () => { if (results[i]) card.style.borderColor = 'var(--accent,#ff6b35)'; };
@@ -2119,29 +2162,7 @@ class App {
       const actionRow = document.createElement('div');
       actionRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:16px;flex-wrap:wrap;gap:12px;';
 
-      // Opção de tipo de remoção de fundo
-      const chkLabel = document.createElement('div');
-      chkLabel.style.cssText = 'display:flex;align-items:center;gap:12px;color:var(--text-secondary,#aaa);font-size:12px;flex-wrap:wrap;';
-      chkLabel.innerHTML = `
-        <span style="font-weight:600;color:#fff;white-space:nowrap;">Fundo pós-upscale:</span>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;">
-          <input type="radio" name="upscale-bg-mode" value="auto" checked style="accent-color:var(--accent,#ff6b35);">
-          Automático (Detectar se é embalagem ou objeto)
-        </label>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;">
-          <input type="radio" name="upscale-bg-mode" value="packaging" style="accent-color:var(--accent,#ff6b35);">
-          Embalagem (preservar cartela)
-        </label>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;">
-          <input type="radio" name="upscale-bg-mode" value="object" style="accent-color:var(--accent,#ff6b35);">
-          Objeto solto
-        </label>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;">
-          <input type="radio" name="upscale-bg-mode" value="none" style="accent-color:var(--accent,#ff6b35);">
-          Manter fundo
-        </label>
-      `;
-      actionRow.appendChild(chkLabel);
+      // (Opções de fundo removidas — o app já faz remoção de fundo eficiente via BRIA)
 
       const btnRow = document.createElement('div');
       btnRow.style.cssText = 'display:flex;gap:12px;align-items:center;';
@@ -2174,7 +2195,7 @@ class App {
       style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
       document.head.appendChild(style);
       
-      // Função para gerar 3 variações (sempre a partir da imagem ORIGINAL)
+      // Função para gerar 2 variações (sempre a partir da imagem ORIGINAL)
       const apiKey = this.settingsManager?.settings?.geminiApiKey;
       let minW = res.minW || 1000;
       let minH = res.minH || 1000;
@@ -2185,37 +2206,41 @@ class App {
         const customPrompt = promptInput ? promptInput.value.trim() : '';
         
         // Resetar cards
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 2; i++) {
           results[i] = null;
           cards[i].imgContainer.innerHTML = '<div style="text-align:center;"><div style="width:30px;height:30px;border:3px solid #333;border-top:3px solid var(--accent,#ff6b35);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 8px;"></div><span style="color:#888;font-size:12px;">Gerando variação ' + (i + 1) + '...</span></div>';
           cards[i].label.textContent = 'Variação ' + (i + 1);
           cards[i].label.style.color = 'var(--text-secondary,#aaa)';
         }
         
-        // Disparar 3 gerações em paralelo (sempre usando a imagem ORIGINAL base64)
-        for (let i = 0; i < 3; i++) {
-          window.api.gemini.upscale({
-            imageBase64: base64,
-            targetW: minW,
-            targetH: minH,
-            apiKey,
-            customPrompt
-          }).then(result => {
-            if (!result || !result.base64) throw new Error('Sem resultado');
-            results[i] = result.base64;
-            
-            const img = document.createElement('img');
-            img.style.cssText = 'width:100%;height:100%;object-fit:contain;';
-            img.src = result.base64;
-            cards[i].imgContainer.innerHTML = '';
-            cards[i].imgContainer.appendChild(img);
-            cards[i].label.textContent = 'Variação ' + (i + 1) + ' - Clique para selecionar';
-            cards[i].label.style.color = 'var(--accent,#ff6b35)';
-          }).catch(err => {
-            cards[i].imgContainer.innerHTML = '<span style="color:#f44;font-size:12px;padding:8px;">Erro: ' + err.message + '</span>';
-            cards[i].label.textContent = 'Falhou';
-          });
-        }
+        // Disparar 2 gerações SEQUENCIAIS (o tempo de resposta já evita 429)
+        const runSequential = async () => {
+          for (let i = 0; i < 2; i++) {
+            try {
+              const result = await window.api.gemini.upscale({
+                imageBase64: base64,
+                targetW: minW,
+                targetH: minH,
+                apiKey,
+                customPrompt
+              });
+              if (!result || !result.base64) throw new Error('Sem resultado');
+              results[i] = result.base64;
+              
+              const img = document.createElement('img');
+              img.style.cssText = 'width:100%;height:100%;object-fit:contain;';
+              img.src = result.base64;
+              cards[i].imgContainer.innerHTML = '';
+              cards[i].imgContainer.appendChild(img);
+              cards[i].label.textContent = 'Variação ' + (i + 1) + ' - Clique para selecionar';
+              cards[i].label.style.color = 'var(--accent,#ff6b35)';
+            } catch (err) {
+              cards[i].imgContainer.innerHTML = '<span style="color:#f44;font-size:12px;padding:8px;">Erro: ' + err.message + '</span>';
+              cards[i].label.textContent = 'Falhou';
+            }
+          }
+        };
+        runSequential();
       };
       
       // Iniciar primeira geração

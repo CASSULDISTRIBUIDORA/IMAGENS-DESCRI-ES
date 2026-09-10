@@ -65,6 +65,40 @@ class SettingsManager {
     });
 
     document.getElementById('btn-open-settings')?.addEventListener('click', () => this.openModal());
+    
+    // Botão "Verificar Atualizações"
+    document.getElementById('btn-check-updates')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-check-updates');
+      const originalText = btn.innerHTML;
+      btn.innerHTML = '<i data-lucide="loader" style="animation:spin 1s linear infinite;"></i> Verificando...';
+      btn.style.pointerEvents = 'none';
+      if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      try {
+        await window.api.updater.checkForUpdates();
+        // Se chegou aqui sem erro, pode ser que não tenha atualização
+        setTimeout(() => {
+          btn.innerHTML = '<i data-lucide="check-circle"></i> Você está na versão mais recente!';
+          btn.style.color = '#10B981';
+          if (window.lucide) lucide.createIcons({ nodes: [btn] });
+          setTimeout(() => {
+            btn.innerHTML = originalText;
+            btn.style.color = '';
+            btn.style.pointerEvents = '';
+            if (window.lucide) lucide.createIcons({ nodes: [btn] });
+          }, 4000);
+        }, 3000);
+      } catch (err) {
+        btn.innerHTML = '<i data-lucide="alert-circle"></i> Erro ao verificar';
+        btn.style.color = '#f44336';
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+        setTimeout(() => {
+          btn.innerHTML = originalText;
+          btn.style.color = '';
+          btn.style.pointerEvents = '';
+          if (window.lucide) lucide.createIcons({ nodes: [btn] });
+        }, 3000);
+      }
+    });
     document.getElementById('btn-settings-cancel')?.addEventListener('click', () => this.closeModal());
     document.getElementById('btn-settings-save')?.addEventListener('click', () => {
       // Puxar parallelProcessing
@@ -99,6 +133,8 @@ class SettingsManager {
       if (queueField) this.settings.sankhyaQueueField = queueField.value.trim();
       const queueValue = document.getElementById('settings-sankhya-queue-value');
       if (queueValue) this.settings.sankhyaQueueValue = queueValue.value.trim();
+      const queueCodUsu = document.getElementById('settings-sankhya-codusu');
+      if (queueCodUsu) this.settings.sankhyaCodUsu = queueCodUsu.value.trim();
       
       // FTP
       const ftpHost = document.getElementById('settings-sankhya-ftp-host');
@@ -113,6 +149,8 @@ class SettingsManager {
       // Gemini
       const geminiKey = document.getElementById('settings-gemini-key');
       if (geminiKey) this.settings.geminiApiKey = geminiKey.value.trim();
+      const geminiKeyFallback = document.getElementById('settings-gemini-key-fallback');
+      if (geminiKeyFallback) this.settings.geminiApiKeyFallback = geminiKeyFallback.value.trim();
       const geminiPrompt = document.getElementById('settings-gemini-prompt');
       if (geminiPrompt) this.settings.geminiPrompt = geminiPrompt.value.trim();
       
@@ -296,6 +334,8 @@ class SettingsManager {
     if (queueField) queueField.value = this.settings.sankhyaQueueField || '';
     const queueValue = document.getElementById('settings-sankhya-queue-value');
     if (queueValue) queueValue.value = this.settings.sankhyaQueueValue || '';
+    const queueCodUsu = document.getElementById('settings-sankhya-codusu');
+    if (queueCodUsu) queueCodUsu.value = this.settings.sankhyaCodUsu || '';
     
     this.renderGroupsChecklist();
     
@@ -312,6 +352,8 @@ class SettingsManager {
     // Gemini
     const geminiKey = document.getElementById('settings-gemini-key');
     if (geminiKey) geminiKey.value = this.settings.geminiApiKey || '';
+    const geminiKeyFallback = document.getElementById('settings-gemini-key-fallback');
+    if (geminiKeyFallback) geminiKeyFallback.value = this.settings.geminiApiKeyFallback || '';
     const geminiPrompt = document.getElementById('settings-gemini-prompt');
     if (geminiPrompt) geminiPrompt.value = this.settings.geminiPrompt || '';
     
