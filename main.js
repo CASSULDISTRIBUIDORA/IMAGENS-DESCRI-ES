@@ -61,8 +61,8 @@ const DEFAULT_SETTINGS = {
   ],
   parallelProcessing: 4,
   removeBgApiKey: "",
-  sankhyaSecret: "",
-  sankhyaToken: "",
+  sankhyaSecret: "hQ4IljPduWLCj9pDNdzfPppkbx8X1O0O",
+  sankhyaToken: "6d08d761-8a17-4af9-9662-207f0959948a",
   sankhyaQuery: "SELECT\np.CODPROD AS CODIGO\n, p.DESCRPROD AS NOME \n, m.descricao AS MARCA\n, p.CARACTERISTICAS \n, d2.DESCRGRUPOPROD GRUPO_NIVEL2\n, d3.DESCRGRUPOPROD GRUPO_NIVEL3\n, d4.DESCRGRUPOPROD GRUPO_NIVEL4\n, p.AD_CATEGORIAPRODUTO \nFROM tgfpro p\nJOIN TGFMAR m ON m.codigo = p.CODMARCA \nLEFT JOIN TGFGRU d4 ON d4.CODGRUPOPROD = p.CODGRUPOPROD \nLEFT JOIN TGFGRU d3 on (d4.codgrupai=d3.codgrupoprod)\nLEFT JOIN TGFGRU d2 on (d3.codgrupai=d2.codgrupoprod)\nLEFT JOIN TGFGRU d1 on (d2.codgrupai=d1.codgrupoprod)\nWHERE p.CODPROD = {SKU}",
   geminiApiKey: "",
   geminiPrompt: "PADRÃO DE GERAÇÃO DE DESCRIÇÕES - PRODUTOS SANKHYA\n\n1. FORMATO DE SAÍDA\n- A descrição final deve ser sempre gerada dentro de um bloco de texto limpo (code block) mas com toda a acentuação e pontuação da língua portuguesa perfeitamente preservadas, utilizando exclusivamente a marcação de código pura de texto simples (plaintext).\n- Não utilizar formatações ricas em Markdown (como negritos ou itálicos) dentro do bloco de texto final.\n\n2. ESTRUTURA DE TÓPICOS INTELIGENTE (ADAPTATIVA)\nO sistema deve identificar a natureza do produto antes de nomear os tópicos. O texto deve ser dividido nas seções abaixo (em LETRAS MAIÚSCULAS), omitindo e adaptando o que não fizer sentido:\n- TÍTULO DO PRODUTO (Nome isolado na primeira linha)\n- Parágrafo Introdutório: Texto corrido resumindo o que é o produto e seu benefício principal (máximo de 2 a 3 linhas).\n- PRINCIPAIS INDICAÇÕES, BENEFÍCIOS E ESPECIFICAÇÕES (Para medicamentos/químicos) OU PRINCIPAIS CARACTERÍSTICAS E BENEFÍCIOS (Para roupas, EPIs e objetos): Lista em tópicos (-). Agrupe marca, cor ou voltagem aqui.\n- FÓRMULA E COMPOSIÇÃO (Para medicamentos/nutrição, realizando a transcrição exata) OU MATERIAL E COMPOSIÇÃO (Para vestuário/ferramentas).\n- MODO DE USAR E POSOLOGIA (Para medicamentos) OU INSTRUÇÕES DE USO / CUIDADOS (Para roupas, equipamentos e limpeza).\n- PERÍODOS DE CARÊNCIA: Lista indicando prazos de descarte. (EXCLUSIVO para produtos veterinários/agrícolas).\n- APRESENTAÇÃO (REGRA DE OURO): ÚLTIMA informação do texto. Detalhe EXCLUSIVAMENTE AQUI os volumes, tamanhos (P, M, G, numerações) e tipos de embalagem.\n\n3. TOM, ESTILO E REGRA ANTI-REPETIÇÃO\n- Linguagem técnica, profissional, clara e objetiva.\n- Regra de Informação Única: NENHUMA característica técnica deve aparecer em mais de um tópico.\n  * Tamanhos, pesos e volumes vão APENAS para a \"Apresentação\".\n  * Espécies-alvo ou público-alvo vão APENAS para as \"Indicações\".\n  * Marca e cor vão APENAS para as \"Especificações\".\n- Eliminar jargões comerciais vazios (ex: \"feito com alta qualidade\", \"design incrível\") e informações óbvias que não agregam valor técnico.\n\n4. CAUTELA JURÍDICA\n- Proibido o uso de termos hiperbólicos ou adjetivos extremos (ex: \"ultra eficiente\", \"cura garantida\").\n- Substituir promessas terapêuticas absolutas por termos seguros (ex: trocar \"evita\" ou \"cura\" por \"auxilia no tratamento de\"). Fidelidade estrita à bula.\n\n5. REGRA DE LIMITE DE CARACTERES E FORMATAÇÃO\n- O texto final gerado DEVE possuir no máximo 3.500 caracteres (incluindo espaços e quebras de linha).\n- Os pontinhos de preenchimento (e.g. .............) na seção \"FÓRMULA E COMPOSIÇÃO\" são OBRIGATÓRIOS apenas para medicamentos e químicos. Não utilizar para roupas e equipamentos.\n- Sintetizar listas e mesclar informações afins de forma compacta e direta.",
@@ -152,7 +152,17 @@ function loadSettings() {
     try {
       const data = fs.readFileSync(settingsPath, 'utf8');
       const parsed = JSON.parse(data);
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      const merged = { ...DEFAULT_SETTINGS, ...parsed };
+      // Fallback para campos vazios de integração da empresa
+      if (!merged.sankhyaSecret) merged.sankhyaSecret = DEFAULT_SETTINGS.sankhyaSecret;
+      if (!merged.sankhyaToken) merged.sankhyaToken = DEFAULT_SETTINGS.sankhyaToken;
+      if (!merged.sankhyaClientId) merged.sankhyaClientId = DEFAULT_SETTINGS.sankhyaClientId;
+      if (!merged.sankhyaEnvironment) merged.sankhyaEnvironment = DEFAULT_SETTINGS.sankhyaEnvironment;
+      if (!merged.sankhyaFtpHost) merged.sankhyaFtpHost = DEFAULT_SETTINGS.sankhyaFtpHost;
+      if (!merged.sankhyaFtpUser) merged.sankhyaFtpUser = DEFAULT_SETTINGS.sankhyaFtpUser;
+      if (!merged.sankhyaFtpPassword) merged.sankhyaFtpPassword = DEFAULT_SETTINGS.sankhyaFtpPassword;
+      if (!merged.sankhyaFtpPath) merged.sankhyaFtpPath = DEFAULT_SETTINGS.sankhyaFtpPath;
+      return merged;
     } catch (error) {
       console.error('Erro ao ler settings:', error);
       return { ...DEFAULT_SETTINGS };
@@ -1903,7 +1913,14 @@ ipcMain.handle('sankhya:uploadMainImage', async (event, { imageBase64, codProd, 
   fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] [Sankhya] Upload imagem principal CODPROD=${codProd} (${Math.round(imageBase64.length / 1024)}KB base64)\n`);
   
   try {
-    // Passo 1: Obter token via cache (com retry se expirado)
+    // Passo 1: Obter token com garantia de sessão MGE fresca
+    // Se o token em cache tiver mais de 10 minutos de idade, invalida para renovar a sessão interna do Sankhya
+    const tokenAge = Date.now() - (sankhyaTokenExpiry - 50 * 60 * 1000);
+    if (!sankhyaCachedToken || tokenAge > 10 * 60 * 1000) {
+      fs.appendFileSync(logFile, `[Sankhya] Token em cache tem mais de 10 min ou é nulo. Forçando renovação para sessão MGE limpa...\n`);
+      sankhyaCachedToken = null;
+      sankhyaTokenExpiry = 0;
+    }
     let tokenResult = await getSankhyaToken(settings);
     let accessToken = tokenResult.accessToken;
     let baseUrl = tokenResult.baseUrl;
