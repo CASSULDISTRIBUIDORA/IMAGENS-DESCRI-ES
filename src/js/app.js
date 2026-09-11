@@ -894,6 +894,25 @@ class App {
       } catch (e) {}
 
       this.showToast(`Salvo no Sankhya com sucesso! (${envLabel})`, 'success');
+
+      // Atualiza a descrição original (caixa de cima)
+      page.descriptionOriginal = textoFinal;
+
+      // Se foi a publicação da IA, limpa a caixa de descrição gerada
+      if (tipo === 'ia') {
+        page.description = '';
+      }
+
+      // Sincroniza a barra lateral (atualiza caixa superior, limpa a inferior e esconde o botão Publicar)
+      this.editor.syncSidebarDescription();
+      this.editor.triggerAutosave();
+
+      // Consulta o Sankhya para trazer a descrição recém-salva diretamente da base para a parte de cima
+      try {
+        await this.editor.buscarSkuSilent(page.id);
+      } catch (refreshErr) {
+        console.warn('Erro ao atualizar dados do Sankhya pós-publicação:', refreshErr);
+      }
     } catch (err) {
       console.error('Erro salvar Sankhya:', err);
       this.showToast('Erro ao salvar: ' + err.message, 'error');
@@ -1199,7 +1218,7 @@ class App {
     
     document.getElementById('menu-remover-fundo-objeto')?.addEventListener('click', () => {
       document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
-      if (this.editor) this.editor.removeBackground(null, true);
+      if (this.editor) this.editor.removeBackground(null, true, 'object');
     });
     
     document.getElementById('menu-remover-fundo-embalagem')?.addEventListener('click', () => {
@@ -1289,6 +1308,9 @@ class App {
               this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
             } else {
               const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
+              if (shouldAutoRemoveBg) {
+                this.editor.showPageOverlay(pageId, 'Removendo fundo', 'Inteligência Artificial trabalhando...');
+              }
               await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
             }
           }
@@ -1787,9 +1809,13 @@ class App {
   
   async applyPostImageRemoval(pageId, base64, bgMode = 'auto') {
     const page = this.editor.getPage(pageId);
-    if (!page) return;
+    if (!page) {
+      this.editor.hidePageOverlay(pageId);
+      return;
+    }
 
     if (bgMode === 'none') {
+      this.editor.hidePageOverlay(pageId);
       this.editor.fitAndCenterImage(pageId);
       this.showToast('Imagem em alta resolução mantida e centralizada!', 'success');
       return;
@@ -1799,6 +1825,7 @@ class App {
     // Se a imagem já possui fundo transparente (PNG sem fundo), NUNCA deve remover o fundo!
     const isAlreadyTransparent = await this.editor.hasTransparency(page.currentImage || base64);
     if (isAlreadyTransparent) {
+      this.editor.hidePageOverlay(pageId);
       page._hasTransparency = true;
       page._bgRemoved = true;
       this.editor.fitAndCenterImage(pageId);
@@ -1829,31 +1856,24 @@ class App {
       return;
     }
 
-    // finalMode === 'object'
-    setTimeout(async () => {
-      const p = this.editor.getPage(pageId);
-      if (p && p.currentImage) {
-        const isTransparent = await this.editor.hasTransparency(p.currentImage);
-        if (isTransparent) {
-          p._hasTransparency = true;
-          p._bgRemoved = true;
-          this.editor.syncRemoveBgButton();
-          this.showToast('Imagem já possui fundo transparente', 'info');
-        } else {
-          this.editor.removeBackground(pageId, true);
-        }
-      }
-    }, 200);
+    // Modo objeto (ou padrão): chamada direta sem setTimeout nem rechecagem redundante
+    this.editor.removeBackground(pageId, true, finalMode || 'object');
   }
 
   async handleDropOnPage(pageId, e) {
     this.editor.setActivePage(pageId);
+    // Feedback visual IMEDIATO ao soltar a imagem (0ms de latência percebida)
+    this.editor.showPageOverlay(pageId, 'Removendo fundo', 'Inteligência Artificial trabalhando...');
+
     const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
     
     if (files.length > 0 && files[0].path) {
       const data = await window.api.files.readImageAsBase64(files[0].path);
       const upscaleResult = await this.validateAndUpscaleImage(data.base64);
-      if (!upscaleResult) return;
+      if (!upscaleResult) {
+        this.editor.hidePageOverlay(pageId);
+        return;
+      }
       const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
       const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       const isUpscaled = !!upscaleResult?.isUpscaled;
@@ -1869,6 +1889,7 @@ class App {
       }
 
       if (data.isTransparent) {
+        this.editor.hidePageOverlay(pageId);
         if (page) {
           page._hasTransparency = true;
           page._bgRemoved = true;
@@ -1887,7 +1908,10 @@ class App {
       const file = files[0];
       const base64 = await this._fileToBase64(file);
       const upscaleResult = await this.validateAndUpscaleImage(base64);
-      if (!upscaleResult) return;
+      if (!upscaleResult) {
+        this.editor.hidePageOverlay(pageId);
+        return;
+      }
       const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
       const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       const isUpscaled = !!upscaleResult?.isUpscaled;
@@ -1918,7 +1942,10 @@ class App {
       this.showToast('Baixando imagem...', 'info');
       const data = await window.api.files.downloadFromUrl(imageUrl);
       const upscaleResult = await this.validateAndUpscaleImage(data.base64);
-      if (!upscaleResult) return;
+      if (!upscaleResult) {
+        this.editor.hidePageOverlay(pageId);
+        return;
+      }
       const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
       const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       const isUpscaled = !!upscaleResult?.isUpscaled;
@@ -1934,6 +1961,8 @@ class App {
       }
 
       await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
+    } else {
+      this.editor.hidePageOverlay(pageId);
     }
   }
   
@@ -2540,11 +2569,18 @@ class App {
   }
   
   showToast(message, type = 'info') {
+    // Higienizar mensagens técnicas de erro do Electron para formato legível e limpo
+    let cleanMsg = String(message || '')
+      .replace(/Error invoking remote method '[^']+':\s*Error:\s*/gi, '')
+      .replace(/^Error:\s*/gi, '')
+      .trim();
+
     // 1. Atualizar a Barra de Notificações no Rodapé (Status Bar)
     const statusMsg = document.getElementById('statusbar-message');
     const statusIcon = document.getElementById('statusbar-icon');
     if (statusMsg) {
-      statusMsg.textContent = message;
+      statusMsg.textContent = cleanMsg;
+      statusMsg.title = cleanMsg;
       if (type === 'success') {
         statusMsg.style.color = '#10B981';
         if (statusIcon) statusIcon.innerHTML = '<i data-lucide="check-circle" style="width:13px;height:13px;color:#10B981;"></i>';
@@ -2561,42 +2597,9 @@ class App {
       if (window.lucide) window.lucide.createIcons();
     }
 
-    // 2. Notificação Pílula Moderna (Garante apenas 1 por vez para NUNCA mais empilhar/sobrepor)
-    let container = document.getElementById('toast-container');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'toast-container';
-      container.className = 'toast-container';
-      document.body.appendChild(container);
-    }
-
-    // Limpa qualquer notificação anterior imediatamente
-    container.innerHTML = '';
-
-    const pill = document.createElement('div');
-    pill.className = `toast-pill toast-${type}`;
-
-    let bg = '#1E293B';
-    let iconName = 'info';
-    if (type === 'success') { bg = 'rgba(16, 185, 129, 0.95)'; iconName = 'check-circle'; }
-    else if (type === 'error') { bg = 'rgba(239, 68, 68, 0.95)'; iconName = 'alert-circle'; }
-    else if (type === 'warning') { bg = 'rgba(245, 158, 11, 0.95)'; iconName = 'alert-triangle'; }
-    else { bg = 'rgba(30, 41, 59, 0.95)'; iconName = 'info'; }
-
-    pill.style.backgroundColor = bg;
-    pill.innerHTML = `
-      <i data-lucide="${iconName}" style="width:14px;height:14px;flex-shrink:0;"></i>
-      <span style="flex:1; word-break: break-word;">${message}</span>
-    `;
-
-    container.appendChild(pill);
-    if (window.lucide) window.lucide.createIcons();
-
-    setTimeout(() => {
-      pill.style.opacity = '0';
-      pill.style.transform = 'translateY(6px)';
-      setTimeout(() => pill.remove(), 250);
-    }, 3200);
+    // Remove qualquer pílula flutuante residual
+    const container = document.getElementById('toast-container');
+    if (container) container.remove();
   }
 
   /**

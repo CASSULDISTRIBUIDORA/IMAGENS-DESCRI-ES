@@ -259,7 +259,7 @@ app.whenReady().then(() => {
       fs.appendFileSync(logFile, `[rembg] Pré-carregando motor BiRefNet em background...\n`);
       startRembgProcess();
     }
-  }, 3000);
+  }, 500);
 
   // Configurar inicialização junto com o Windows (rodando oculto em background)
   app.setLoginItemSettings({
@@ -794,160 +794,72 @@ async function removeWhiteBackgroundBuffer(imgBuffer) {
   const { data, info } = await sharp(imgBuffer).raw().toBuffer({ resolveWithObject: true });
   const { width, height, channels } = info;
 
-  // 1. Detectar os limites retangulares da embalagem
-  let minX = 0, maxX = width - 1, minY = 0, maxY = height - 1;
+  // Flood fill suave a partir das 4 bordas para remover apenas o fundo branco externo conectado
+  const isBg = new Uint8Array(width * height);
+  const queue = [];
 
-  for (let y = 0; y < height / 2; y++) {
-    let nonWhite = 0;
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      const a = channels === 4 ? data[idx + 3] : 255;
-      if (a > 20 && (data[idx] < 230 || data[idx + 1] < 230 || data[idx + 2] < 230)) nonWhite++;
-    }
-    if (nonWhite > width * 0.15) { minY = y; break; }
+  const isWhitePixel = (pos) => {
+    const idx = pos * channels;
+    const a = channels === 4 ? data[idx + 3] : 255;
+    if (a < 20) return true;
+    const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+    const minC = Math.min(r, g, b);
+    const maxC = Math.max(r, g, b);
+    return minC >= 238 && (maxC - minC) < 18;
+  };
+
+  // Enfileirar pixels brancos das bordas
+  for (let x = 0; x < width; x++) {
+    const topPos = x;
+    const bottomPos = (height - 1) * width + x;
+    if (isWhitePixel(topPos)) { isBg[topPos] = 1; queue.push(topPos); }
+    if (isWhitePixel(bottomPos)) { isBg[bottomPos] = 1; queue.push(bottomPos); }
   }
-
-  for (let y = height - 1; y > height / 2; y--) {
-    let nonWhite = 0;
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * channels;
-      const a = channels === 4 ? data[idx + 3] : 255;
-      if (a > 20 && (data[idx] < 230 || data[idx + 1] < 230 || data[idx + 2] < 230)) nonWhite++;
-    }
-    if (nonWhite > width * 0.15) { maxY = y; break; }
-  }
-
-  for (let x = 0; x < width / 2; x++) {
-    let nonWhite = 0;
-    for (let y = minY; y <= maxY; y++) {
-      const idx = (y * width + x) * channels;
-      const a = channels === 4 ? data[idx + 3] : 255;
-      if (a > 20 && (data[idx] < 230 || data[idx + 1] < 230 || data[idx + 2] < 230)) nonWhite++;
-    }
-    if (nonWhite > (maxY - minY) * 0.20) { minX = x; break; }
-  }
-
-  for (let x = width - 1; x > width / 2; x--) {
-    let nonWhite = 0;
-    for (let y = minY; y <= maxY; y++) {
-      const idx = (y * width + x) * channels;
-      const a = channels === 4 ? data[idx + 3] : 255;
-      if (a > 20 && (data[idx] < 230 || data[idx + 1] < 230 || data[idx + 2] < 230)) nonWhite++;
-    }
-    if (nonWhite > (maxY - minY) * 0.20) { maxX = x; break; }
-  }
-
-  // 2. Furo do pendurador (euro slot): identificar ilha branca conectada na parte superior central
-  const slotMinY = minY + Math.round((maxY - minY) * 0.02);
-  const slotMaxY = minY + Math.round((maxY - minY) * 0.18);
-  const slotMinX = Math.round(minX + (maxX - minX) * 0.25);
-  const slotMaxX = Math.round(minX + (maxX - minX) * 0.75);
-
-  const isSlotPixel = new Uint8Array(width * height);
-  const visitedSlot = new Uint8Array(width * height);
-
-  for (let y = slotMinY; y <= slotMaxY; y++) {
-    for (let x = slotMinX; x <= slotMaxX; x++) {
-      const startPos = y * width + x;
-      if (visitedSlot[startPos]) continue;
-
-      const startIdx = startPos * channels;
-      const r = data[startIdx], g = data[startIdx + 1], b = data[startIdx + 2];
-      const a = channels === 4 ? data[startIdx + 3] : 255;
-      if (a > 20 && r >= 230 && g >= 230 && b >= 230) {
-        const comp = [];
-        const queue = [startPos];
-        visitedSlot[startPos] = 1;
-
-        let qHead = 0;
-        while (qHead < queue.length) {
-          const curr = queue[qHead++];
-          comp.push(curr);
-          const cx = curr % width;
-          const cy = Math.floor(curr / width);
-
-          const neighbors = [
-            (cx > slotMinX) ? curr - 1 : -1,
-            (cx < slotMaxX) ? curr + 1 : -1,
-            (cy > slotMinY) ? curr - width : -1,
-            (cy < slotMaxY) ? curr + width : -1,
-          ];
-
-          for (const n of neighbors) {
-            if (n !== -1 && !visitedSlot[n]) {
-              const nIdx = n * channels;
-              const na = channels === 4 ? data[nIdx + 3] : 255;
-              if (na > 20 && data[nIdx] >= 230 && data[nIdx + 1] >= 230 && data[nIdx + 2] >= 230) {
-                visitedSlot[n] = 1;
-                queue.push(n);
-              }
-            }
-          }
-        }
-
-        if (comp.length >= 500) {
-          for (const pos of comp) {
-            isSlotPixel[pos] = 1;
-          }
-        }
-      }
-    }
-  }
-
-  // 3. Montar buffer RGBA final
-  const outBuf = Buffer.alloc(width * height * 4);
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const pos = y * width + x;
-      const srcIdx = pos * channels;
-      const dstIdx = pos * 4;
+    const leftPos = y * width;
+    const rightPos = y * width + (width - 1);
+    if (!isBg[leftPos] && isWhitePixel(leftPos)) { isBg[leftPos] = 1; queue.push(leftPos); }
+    if (!isBg[rightPos] && isWhitePixel(rightPos)) { isBg[rightPos] = 1; queue.push(rightPos); }
+  }
 
-      outBuf[dstIdx] = data[srcIdx];
-      outBuf[dstIdx + 1] = data[srcIdx + 1];
-      outBuf[dstIdx + 2] = data[srcIdx + 2];
+  // BFS para espalhar pelo fundo branco externo
+  let head = 0;
+  while (head < queue.length) {
+    const curr = queue[head++];
+    const cx = curr % width;
+    const cy = Math.floor(curr / width);
 
-      const inRect = (x >= minX && x <= maxX && y >= minY && y <= maxY);
-      const inSlot = isSlotPixel[pos] === 1;
+    const neighbors = [
+      cx > 0 ? curr - 1 : -1,
+      cx < width - 1 ? curr + 1 : -1,
+      cy > 0 ? curr - width : -1,
+      cy < height - 1 ? curr + width : -1
+    ];
 
-      if (!inRect || inSlot) {
-        outBuf[dstIdx + 3] = 0; // Transparente
-      } else {
-        outBuf[dstIdx + 3] = channels === 4 ? data[srcIdx + 3] : 255;
+    for (const n of neighbors) {
+      if (n !== -1 && !isBg[n] && isWhitePixel(n)) {
+        isBg[n] = 1;
+        queue.push(n);
       }
     }
   }
 
-  const rawPng = await sharp(outBuf, { raw: { width, height, channels: 4 } }).png().toBuffer();
-  
-  // Recorte automático de sobras transparentes e enquadramento quadrado 1000x1000 com margem
-  const trimmed = await sharp(rawPng).trim().png().toBuffer();
-  const meta = await sharp(trimmed).metadata();
-  const tw = meta.width;
-  const th = meta.height;
+  // Montar buffer RGBA final
+  const outBuf = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const srcIdx = i * channels;
+    const dstIdx = i * 4;
+    outBuf[dstIdx] = data[srcIdx];
+    outBuf[dstIdx + 1] = data[srcIdx + 1];
+    outBuf[dstIdx + 2] = data[srcIdx + 2];
+    if (isBg[i]) {
+      outBuf[dstIdx + 3] = 0;
+    } else {
+      outBuf[dstIdx + 3] = channels === 4 ? data[srcIdx + 3] : 255;
+    }
+  }
 
-  const targetSize = Math.max(tw, th, 1000);
-  const maxDim = targetSize * 0.86;
-  const scale = Math.min(maxDim / tw, maxDim / th, 1.0);
-  const scaledW = Math.round(tw * scale);
-  const scaledH = Math.round(th * scale);
-
-  const resized = await sharp(trimmed).resize(scaledW, scaledH).png().toBuffer();
-
-  const padLeft = Math.round((targetSize - scaledW) / 2);
-  const padRight = targetSize - scaledW - padLeft;
-  const padTop = Math.round((targetSize - scaledH) / 2);
-  const padBottom = targetSize - scaledH - padTop;
-
-  return await sharp(resized)
-    .extend({
-      top: padTop,
-      bottom: padBottom,
-      left: padLeft,
-      right: padRight,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    })
-    .png()
-    .toBuffer();
+  return await sharp(outBuf, { raw: { width, height, channels: 4 } }).png().toBuffer();
 }
 
 
@@ -1050,6 +962,11 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
       }
     }
 
+    // Se o nome não sugere embalagem e os cantos não estão preenchidos como cartela retangular, é objeto (0ms instantâneo)
+    if (!nameSuggestsPkg && cornerFilled <= 2) {
+      return 'object';
+    }
+
     // CAMADA 2: Tira-teima com Gemini Vision (se houver ambiguidade e chave da API)
     if (apiKey) {
       try {
@@ -1061,6 +978,7 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(1000), // Limite de 1s para nunca prender a interface
           body: JSON.stringify({
             contents: [{
               parts: [
@@ -1118,8 +1036,8 @@ ipcMain.handle('image:removeWhiteBg', async (event, base64Data) => {
   }
 });
 
-ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey }) => {
-  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] Iniciando remoção de fundo (rembg / @imgly)...\n`);
+ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode = 'auto' }) => {
+  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] Iniciando remoção de fundo (modo: ${mode}, rembg / @imgly)...\n`);
   
   try {
     const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
@@ -1128,7 +1046,7 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey }) => 
     let processedBuffer = null;
     let elapsed = 0;
     
-    // 1. Tentar motor BiRefNet (exe empacotado, dev-local ou Python do sistema)
+    // 1. Tentar motor Python persistente (U2Net, IS-Net, BRIA)
     if (getRembgExePath()) {
       try {
         if (!rembgProcess) {
@@ -1146,10 +1064,10 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey }) => 
           const outputPath = path.join(tempDir, `output_${ts}.png`);
           
           await sharp(imgBuffer).rotate().png().toFile(inputPath);
-          fs.appendFileSync(logFile, `[rembg] Enviando para processamento Python...\n`);
+          fs.appendFileSync(logFile, `[rembg] Enviando para processamento Python (modo=${mode})...\n`);
           const startTime = Date.now();
           
-          const result = await sendToRembg(`${inputPath}|${outputPath}`);
+          const result = await sendToRembg(`${inputPath}|${outputPath}|${mode}`);
           elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           fs.appendFileSync(logFile, `[rembg] Resultado Python em ${elapsed}s: ${result}\n`);
           
@@ -2079,14 +1997,14 @@ ipcMain.handle('sankhya:uploadMainImage', async (event, { imageBase64, codProd, 
             key: { CODPROD: { '$': String(codProd) } },
             localFields: { IMAGEM: { '$': '$file.session.key{Produto_IMAGEM}' } }
           },
-          entity: { fieldset: { list: '' } }
+          entity: { fieldset: { list: 'CODPROD,IMAGEM' } }
         }
       }
     };
     
     fs.appendFileSync(logFile, `[Sankhya] POST CRUDServiceProvider.saveRecord vinculando imagem ao CODPROD=${codProd}\n`);
     
-    const saveResponse = await fetch(saveUrl, {
+    let saveResponse = await fetch(saveUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -2095,9 +2013,39 @@ ipcMain.handle('sankhya:uploadMainImage', async (event, { imageBase64, codProd, 
       body: JSON.stringify(saveBody)
     });
     
-    const saveData = await saveResponse.json().catch(() => null);
+    let saveData = await saveResponse.json().catch(() => null);
     fs.appendFileSync(logFile, `[Sankhya] Resposta CRUDServiceProvider CODPROD=${codProd}: ${JSON.stringify(saveData).substring(0, 500)}\n`);
     
+    // Se retornar status 3 ("Não autorizado"), o token pode ter expirado silenciosamente no backend. Renova e tenta novamente.
+    if (saveData?.status === '3' || saveData?.statusMessage?.includes('Não autorizado')) {
+      fs.appendFileSync(logFile, `[Sankhya] saveRecord retornou status 3 (Não autorizado). Renovando token silenciosamente e tentando novamente...\n`);
+      sankhyaCachedToken = null;
+      sankhyaTokenExpiry = 0;
+      const refreshed = await getSankhyaToken(settings);
+      accessToken = refreshed.accessToken;
+      
+      // Refazer sessionUpload com o novo token para atualizar a chave de sessão
+      await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body: multipartBody
+      });
+      
+      saveResponse = await fetch(saveUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(saveBody)
+      });
+      saveData = await saveResponse.json().catch(() => null);
+      fs.appendFileSync(logFile, `[Sankhya] Resposta retry saveRecord CODPROD=${codProd}: ${JSON.stringify(saveData).substring(0, 500)}\n`);
+    }
+
     if (saveData && saveData.status === '1') {
       fs.appendFileSync(logFile, `[Sankhya] SUCESSO! Imagem principal vinculada ao CODPROD=${codProd}\n`);
       return { success: true };

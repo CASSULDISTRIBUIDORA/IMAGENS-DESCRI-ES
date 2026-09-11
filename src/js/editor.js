@@ -314,6 +314,7 @@ class Editor {
     page._upscaledImage = null;
     page.ocrImages = [];
     page.ocrImageBase64 = null;
+    page._lastLoadedSku = '';
     
     // Resetar DOM
     const wrapper = document.querySelector(`.page-wrapper[data-page-id="${pageId}"]`);
@@ -701,9 +702,26 @@ class Editor {
     let searchTimeout;
     if (skuInput) {
       skuInput.addEventListener('input', (e) => {
+        const oldSku = String(page.sku || '').trim();
+        const newSku = String(e.target.value || '').trim();
+        
         page.sku = e.target.value;
-        this.syncSidebarDescription();
-        this.updateTabBadge();
+        if (oldSku !== newSku) {
+          // Se trocou o cod do item, a caixa de descrição gerada deve ser limpa
+          page.description = '';
+          page.descriptionOriginal = '';
+          page.productName = '';
+          page.brand = '';
+          page.referenceImage = null;
+          page.warehouseAddresses = null;
+          page.altPhotoCount = 0;
+          page._freshSankhyaLoaded = false;
+          this.syncSidebarDescription();
+          this.updateTabBadge();
+          this.triggerAutosave();
+        } else {
+          this.syncSidebarDescription();
+        }
         
         clearTimeout(searchTimeout);
         if (page.sku && page.sku.trim().length >= 2) {
@@ -1844,7 +1862,7 @@ class Editor {
     page._isProcessing = true;
     page._abortOperation = false;
     
-    this.showPageOverlay(page.id, 'Removendo fundo da embalagem', 'Preservando cartela e textos via BiRefNet...', () => {
+    this.showPageOverlay(page.id, 'Removendo fundo da embalagem', 'Preservando cartela, blister e textos...', () => {
       page._abortOperation = true;
       page._isProcessing = false;
       this.hidePageOverlay(page.id);
@@ -1854,7 +1872,10 @@ class Editor {
 
     try {
       const sourceImage = page._upscaledImage || page.originalImage || page.currentImage;
-      const res = await window.api.image.removeBgChroma({ base64Data: sourceImage.src });
+      const res = await window.api.image.removeBgChroma({
+        base64Data: sourceImage.src,
+        mode: 'packaging'
+      });
 
       if (page._abortOperation) {
         page._isProcessing = false;
@@ -1900,7 +1921,7 @@ class Editor {
   }
 
 
-  async removeBackground(pageId = null, force = false) {
+  async removeBackground(pageId = null, force = false, mode = 'auto') {
     const page = pageId ? this.getPage(pageId) : this.getActivePage();
     if (!page || !page.currentImage || page._isProcessing) return;
 
@@ -1945,7 +1966,8 @@ class Editor {
       try {
         result = await window.api.image.removeBgChroma({
           base64Data: page.currentImage.src,
-          apiKey: settings?.geminiApiKey || ''
+          apiKey: settings?.geminiApiKey || '',
+          mode: mode
         });
       } catch (chromaErr) {
         console.warn('Remoção local falhou:', chromaErr);
@@ -2027,33 +2049,48 @@ class Editor {
   
   // ======================== Varinha Mágica (Magic Wand) ========================
   
-  toggleMagicWand() {
-    this._magicWandActive = !this._magicWandActive;
+  deactivateMagicWand() {
+    this._magicWandActive = false;
     const btn = document.getElementById('btn-magic-wand');
-    
+    if (btn) btn.classList.remove('active');
+    document.querySelectorAll('.page-canvas').forEach(c => {
+      c.style.cursor = '';
+    });
+    if (this._magicWandHandler) {
+      document.getElementById('pages-container')?.removeEventListener('click', this._magicWandHandler);
+      this._magicWandHandler = null;
+    }
+  }
+
+  toggleMagicWand() {
     if (this._magicWandActive) {
+      this.deactivateMagicWand();
+    } else {
+      // Ao ativar a varinha mágica, desativa qualquer pincel ativo para evitar conflitos
+      if (this.magicEraserActive) {
+        this.deactivateBrush();
+      }
+      this._magicWandActive = true;
+      const btn = document.getElementById('btn-magic-wand');
       if (btn) btn.classList.add('active');
       document.querySelectorAll('.page-canvas').forEach(c => {
         c.style.cursor = 'crosshair';
       });
+      if (this._magicWandHandler) {
+        document.getElementById('pages-container')?.removeEventListener('click', this._magicWandHandler);
+      }
       this._magicWandHandler = (e) => this._onMagicWandClick(e);
       document.getElementById('pages-container')?.addEventListener('click', this._magicWandHandler);
       if (window.app) window.app.showToast('Varinha Mágica ativada! Clique na área que deseja remover.', 'info');
-    } else {
-      if (btn) btn.classList.remove('active');
-      document.querySelectorAll('.page-canvas').forEach(c => {
-        c.style.cursor = '';
-      });
-      if (this._magicWandHandler) {
-        document.getElementById('editor-pages-container')?.removeEventListener('click', this._magicWandHandler);
-        this._magicWandHandler = null;
-      }
     }
   }
   
   _onMagicWandClick(e) {
+    if (!this._magicWandActive) return;
+    if (this.magicEraserActive) return; // Se qualquer pincel estiver ativo, NUNCA executa a varinha mágica
+    
     const canvas = e.target;
-    if (!canvas || canvas.tagName !== 'CANVAS') return;
+    if (!canvas || canvas.tagName !== 'CANVAS' || !canvas.classList.contains('page-canvas')) return;
     
     const wrapper = canvas.closest('.page-wrapper');
     if (!wrapper) return;
@@ -2478,8 +2515,12 @@ class Editor {
     }
     if (window.app) window.app.showToast('Buscando no Sankhya...', 'info');
     
-    // Limpar apenas a descrição original para recarregar fresca do Sankhya
+    // Limpar descrição original para recarregar fresca do Sankhya
     page.descriptionOriginal = '';
+    // Se trocou o código do item em relação ao último produto carregado, limpa a descrição gerada
+    if (page._lastLoadedSku && String(page._lastLoadedSku).trim() !== sku) {
+      page.description = '';
+    }
     this.syncSidebarDescription();
     try {
       const result = await window.api.sankhya.query({
@@ -2517,6 +2558,7 @@ class Editor {
         if (nomeProduto) page.productName = nomeProduto;
         if (marca) page.brand = marca;
         page._freshSankhyaLoaded = true;
+        page._lastLoadedSku = sku;
         this.updatePageHeader(page);
         if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
           window.app.updateStatusBarQueueCount();
@@ -3012,6 +3054,9 @@ class Editor {
     // Fechar prompt flutuante se tiver aberto
     this._removeFloatingPrompt();
     
+    // Desativar varinha mágica se estiver ativa para evitar qualquer conflito
+    this.deactivateMagicWand();
+    
     // Ativar pincel (ou recriar canvas se já estava ativo)
     if (this.magicEraserActive) {
       // J? estava ativo, limpar e recriar com novo modo
@@ -3066,6 +3111,12 @@ class Editor {
     } else {
       this.clearMagicEraserCanvas();
       this._removeFloatingPrompt();
+    }
+
+    // 3.1. Desativar Varinha Mágica se ativa
+    if (this._magicWandActive) {
+      this.deactivateMagicWand();
+      count++;
     }
 
     // 4. Fechar variações de IA se exibidas
@@ -3161,6 +3212,11 @@ class Editor {
       e.stopPropagation();
     });
 
+    overlay.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
     overlay.addEventListener('mousedown', (e) => {
       // Photoshop style: Alt + Botão Direito para redimensionar pincel
       if (e.button === 2 && (e.altKey || this._altKeyHeld)) {
@@ -3170,12 +3226,14 @@ class Editor {
         return;
       }
       if (e.button === 0 && !e.altKey) {
+        e.stopPropagation();
         this._eraserStartPaint(e);
       }
     });
 
     overlay.addEventListener('mousemove', (e) => {
       if (!this._isResizingBrush) {
+        e.stopPropagation();
         this._eraserMoveCursor(e);
         this._eraserPaint(e);
       }
@@ -3183,6 +3241,7 @@ class Editor {
 
     overlay.addEventListener('mouseup', (e) => {
       if (e.button === 0) {
+        e.stopPropagation();
         this._eraserStopPaint(e);
       }
     });

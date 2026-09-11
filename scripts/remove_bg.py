@@ -24,17 +24,37 @@ from PIL import Image
 
 MAX_PROCESS_SIZE = 1024
 
-# Modelos em ordem de preferência (melhor primeiro)
-MODEL_CASCADE = [
+# Modelos principais carregados na inicialização rápida (~3s)
+PRIMARY_MODELS = [
     ("bria-rmbg", "BRIA RMBG-2.0"),
-    ("birefnet-general", "BiRefNet"),
+    ("u2net", "U2Net (Universal / Embalagens)"),
 ]
 
-# Carregar modelos na inicialização
+# Cascatas por modo de produto
+CASCADES = {
+    "packaging": [
+        ("u2net", "U2Net (Universal / Embalagens)"),
+        ("bria-rmbg", "BRIA RMBG-2.0"),
+        ("isnet-general-use", "IS-Net"),
+    ],
+    "object": [
+        ("bria-rmbg", "BRIA RMBG-2.0"),
+        ("birefnet-general", "BiRefNet"),
+        ("u2net", "U2Net (Universal / Embalagens)"),
+    ],
+    "auto": [
+        ("bria-rmbg", "BRIA RMBG-2.0"),
+        ("u2net", "U2Net (Universal / Embalagens)"),
+        ("isnet-general-use", "IS-Net"),
+        ("birefnet-general", "BiRefNet"),
+    ],
+}
+
+# Carregar modelos principais na inicialização
 print("LOADING", flush=True)
 
 sessions = {}
-for model_id, model_name in MODEL_CASCADE:
+for model_id, model_name in PRIMARY_MODELS:
     try:
         sys.stderr.write(f"Carregando {model_name} ({model_id})...\n")
         sys.stderr.flush()
@@ -49,10 +69,20 @@ if not sessions:
     sys.stderr.write("ERRO: Nenhum modelo disponível!\n")
     sys.exit(1)
 
-# Reportar modelos disponíveis
-available = [name for mid, name in MODEL_CASCADE if mid in sessions]
-sys.stderr.write(f"Modelos prontos: {', '.join(available)}\n")
-sys.stderr.flush()
+def get_model_session(model_id, model_name):
+    """Retorna a sessão do modelo, carregando sob demanda se ainda não estiver na memória."""
+    if model_id not in sessions:
+        try:
+            sys.stderr.write(f"Carregando {model_name} ({model_id}) sob demanda...\n")
+            sys.stderr.flush()
+            sessions[model_id] = new_session(model_id)
+            sys.stderr.write(f"{model_name} pronto!\n")
+            sys.stderr.flush()
+        except Exception as e:
+            sys.stderr.write(f"Falha ao carregar {model_name}: {e}\n")
+            sys.stderr.flush()
+    return sessions.get(model_id)
+
 print("READY", flush=True)
 
 
@@ -126,40 +156,61 @@ def clean_enclosed_cavities(result_rgba):
         return result_rgba
 
 
-def refine_alpha_edges(result_rgba, erode_px=1, blur_px=3):
+def refine_edges_advanced(result_rgba, min_threshold=70, erode_px=1):
     """
-    Pós-processamento anti-halo: erode levemente o canal alpha
-    e suaviza as bordas para eliminar franjas brancas/cinzas.
+    Acabamento firme, nítido e comercial:
+    1. Descontaminação de borda branca (Defringe) nos pixels semi-transparentes.
+    2. Eliminação do esfumaçado: corta os pixels de alpha fraco (< min_threshold) que criam névoa/fumaça.
+    3. Rampa rápida e estreita de transição: borda firme e sólida em vez de degradê esfumaçado.
+    4. Erosão rente de 1px para evitar rebarbas.
+    5. Anti-aliasing sub-pixel estreito de 1px, evitando serrilhados sem espalhar blur.
     """
     try:
         arr = np.array(result_rgba)
         if arr.ndim < 3 or arr.shape[2] < 4:
             return result_rgba
 
-        alpha = arr[:, :, 3]
+        rgb = arr[:, :, :3].astype(float)
+        alpha = arr[:, :, 3].astype(float)
 
-        # Erosão leve para remover pixels de borda semi-transparentes (halos)
+        # 1. Descontaminação de borda branca (Defringe)
+        a_norm = np.clip(alpha / 255.0, 0.001, 1.0)[:, :, np.newaxis]
+        unmixed = np.clip((rgb - 255.0 * (1.0 - a_norm)) / a_norm, 0, 255)
+        transition_zone = (alpha > 5) & (alpha < 245)
+        rgb[transition_zone] = unmixed[transition_zone]
+        arr[:, :, :3] = rgb.astype(np.uint8)
+
+        # 2. Borda Firme e Rígida (Elimina a penumbra/esfumaçado)
+        a = alpha.copy()
+        a[a < min_threshold] = 0.0
+
+        # Rampa rápida de transição entre min_threshold e 185
+        ramp = (a >= min_threshold) & (a < 185.0)
+        a[ramp] = ((a[ramp] - min_threshold) / (185.0 - min_threshold)) * 255.0
+        a[a >= 185.0] = 255.0
+
+        a_uint = a.astype(np.uint8)
+
+        # 3. Erosão precisa de 1px para acabamento rente
         if erode_px > 0:
-            kernel = np.ones((erode_px * 2 + 1, erode_px * 2 + 1), np.uint8)
-            alpha = cv2.erode(alpha, kernel, iterations=1)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_px * 2 + 1, erode_px * 2 + 1))
+            a_uint = cv2.erode(a_uint, kernel, iterations=1)
 
-        # Suavização das bordas
-        if blur_px > 0:
-            # Criar máscara de borda
-            edge_mask = cv2.dilate(alpha, np.ones((3, 3), np.uint8)) - cv2.erode(alpha, np.ones((3, 3), np.uint8))
-            blurred = cv2.GaussianBlur(alpha, (blur_px, blur_px), 0)
-            # Aplicar suavização apenas nas bordas
-            alpha = np.where(edge_mask > 0, blurred, alpha)
+        # 4. Anti-aliasing sub-pixel estrito de 1px (elimina serrilhado sem criar névoa)
+        kernel_aa = np.array([[0, 1, 0], [1, 4, 1], [0, 1, 0]], dtype=float) / 8.0
+        edge_mask = (cv2.dilate(a_uint, np.ones((3, 3), np.uint8)) - cv2.erode(a_uint, np.ones((3, 3), np.uint8))) > 0
+        a_aa = cv2.filter2D(a_uint.astype(float), -1, kernel_aa)
+        a_final = np.where(edge_mask, a_aa, a_uint).astype(np.uint8)
 
-        arr[:, :, 3] = alpha
+        arr[:, :, 3] = a_final
         return Image.fromarray(arr)
     except Exception as e:
-        sys.stderr.write(f"Alpha refinement error: {e}\n")
+        sys.stderr.write(f"Refine edges error: {e}\n")
         return result_rgba
 
 
-def process_image(input_path, output_path):
-    """Remove o fundo usando cascata inteligente de modelos."""
+def process_image(input_path, output_path, mode="auto"):
+    """Remove o fundo usando cascata inteligente de modelos conforme o modo selecionado."""
     original = Image.open(input_path)
     orig_w, orig_h = original.size
 
@@ -169,7 +220,7 @@ def process_image(input_path, output_path):
         ratio = MAX_PROCESS_SIZE / max(orig_w, orig_h)
         new_w = int(orig_w * ratio)
         new_h = int(orig_h * ratio)
-        process_img = original.resize((new_w, new_h), Image.LANCZOS)
+        process_img = original.resize((new_w, new_h), Image.BILINEAR)
 
         buf = io.BytesIO()
         process_img.save(buf, format='PNG')
@@ -178,17 +229,20 @@ def process_image(input_path, output_path):
         with open(input_path, 'rb') as f:
             input_data = f.read()
 
-    # Cascata: tentar cada modelo em ordem de qualidade
+    # Selecionar cascata conforme o modo (packaging, object, auto)
+    cascade = CASCADES.get(str(mode).lower(), CASCADES["auto"])
+
     result = None
     model_used = "none"
 
-    for model_id, model_name in MODEL_CASCADE:
-        if model_id not in sessions:
+    for model_id, model_name in cascade:
+        sess = get_model_session(model_id, model_name)
+        if sess is None:
             continue
         try:
-            sys.stderr.write(f"Processando com {model_name}...\n")
+            sys.stderr.write(f"Processando (modo={mode}) com {model_name}...\n")
             sys.stderr.flush()
-            output_data = remove(input_data, session=sessions[model_id], alpha_matting=False)
+            output_data = remove(input_data, session=sess, alpha_matting=False)
             result = Image.open(io.BytesIO(output_data))
             model_used = model_name
             sys.stderr.write(f"{model_name} concluído com sucesso!\n")
@@ -200,18 +254,19 @@ def process_image(input_path, output_path):
             continue
 
     if result is None:
-        raise Exception("Todos os modelos falharam")
+        raise Exception("Todos os modelos da cascata falharam")
 
     if needs_resize:
         alpha = result.split()[-1]
-        alpha_full = alpha.resize((orig_w, orig_h), Image.LANCZOS)
+        alpha_full = alpha.resize((orig_w, orig_h), Image.BILINEAR)
+        alpha_arr = np.clip(np.array(alpha_full), 0, 255).astype(np.uint8)
+        alpha_full = Image.fromarray(alpha_arr)
         original = original.convert('RGBA')
         original.putalpha(alpha_full)
         result = original
 
-    # Pós-processamento desativado — BRIA/BiRefNet já produzem resultados limpos
-    # result = clean_enclosed_cavities(result)
-    # result = refine_alpha_edges(result, erode_px=1, blur_px=3)
+    # Pós-processamento de acabamento da IA: bordas mais firmes e nítidas (sem esfumaçado)
+    result = refine_edges_advanced(result, min_threshold=70, erode_px=1)
 
     result.save(output_path, 'PNG')
     return result.size, model_used
@@ -229,8 +284,9 @@ for line in sys.stdin:
         parts = line.split('|')
         input_path = parts[0]
         output_path = parts[1]
+        mode = parts[2] if len(parts) > 2 and parts[2] else "auto"
 
-        (w, h), model = process_image(input_path, output_path)
+        (w, h), model = process_image(input_path, output_path, mode)
         print(f"OK|{w}|{h}|{model}", flush=True)
     except Exception as e:
         print(f"ERROR|{str(e)}", flush=True)
