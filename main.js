@@ -24,8 +24,12 @@ app.on('second-instance', (event, commandLine, workingDirectory) => {
   // Alguém tentou rodar uma segunda instância, vamos focar a nossa janela original
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.maximize();
+    mainWindow.setAlwaysOnTop(true);
     mainWindow.show();
     mainWindow.focus();
+    mainWindow.setAlwaysOnTop(false);
   }
 });
 
@@ -218,14 +222,24 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // Mostra a janela quando o conteúdo estiver pronto, se não estiver iniciando oculto
-  mainWindow.once('ready-to-show', () => {
-    if (!process.argv.includes('--hidden')) {
+  const showMainWindow = () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !process.argv.includes('--hidden')) {
       mainWindow.maximize();
       mainWindow.show();
       mainWindow.focus();
     }
+  };
+
+  // Mostra a janela quando o conteúdo estiver pronto, se não estiver iniciando oculto
+  mainWindow.once('ready-to-show', () => {
+    showMainWindow();
   });
+
+  // Fallback caso ready-to-show demore ou falhe ao disparar
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(showMainWindow, 300);
+  });
+  setTimeout(showMainWindow, 2000);
 
   // Em vez de fechar, minimizar para a bandeja
   mainWindow.on('close', (event) => {
@@ -624,6 +638,8 @@ let rembgProcess = null;
 let rembgReady = false;
 let rembgPendingResolve = null;
 let rembgBuffer = '';
+let rembgWarmupSent = false;
+let rembgWarmupAllowed = false;
 let imglyModule = null;
 
 function getImglyPublicPath() {
@@ -689,6 +705,8 @@ function startRembgProcess() {
   const { spawn } = require('child_process');
   
   try {
+    // Pre-carregamento (WARMUP) so no motor Python do sistema (o exe antigo nao conhece o comando)
+    rembgWarmupAllowed = rembgInfo.source === 'python-sistema';
     rembgProcess = spawn(rembgInfo.exe, rembgInfo.args, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -724,6 +742,15 @@ function startRembgProcess() {
           fs.appendFileSync(logFile, `[rembg] Carregando modelos (BRIA RMBG-2.0 + BiRefNet)...\n`);
         } else if (trimmed === 'READY') {
           rembgReady = true;
+          if (rembgWarmupAllowed && !rembgWarmupSent) {
+            rembgWarmupSent = true;
+            fs.appendFileSync(logFile, '[rembg] Pre-carregando Florence-2 + SAM 2.1 em segundo plano...\n');
+            setTimeout(() => {
+              try {
+                if (rembgProcess && rembgProcess.stdin && rembgProcess.stdin.writable) rembgProcess.stdin.write('WARMUP\n');
+              } catch (e) { /* ignorado */ }
+            }, 1500);
+          }
           fs.appendFileSync(logFile, `[rembg] Modelo carregado! Pronto para processar.\n`);
           if (rembgPendingResolve) {
             rembgPendingResolve('READY');
@@ -744,6 +771,7 @@ function startRembgProcess() {
     
     rembgProcess.on('close', (code) => {
       fs.appendFileSync(logFile, `[rembg] Processo encerrado (code ${code})\n`);
+      rembgWarmupSent = false;
       rembgProcess = null;
       rembgReady = false;
       if (rembgPendingResolve) {
@@ -883,35 +911,51 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
       .toBuffer({ resolveWithObject: true });
     const { width, height, channels } = info;
 
-    // 1. Amostragem das 4 bordas externas
-    let whiteBorder = 0;
-    let totalBorder = 0;
-    for (let x = 0; x < width; x += 10) {
+    // 1. Amostragem das 4 bordas externas para detectar a cor real do fundo (suporta laranja, verde, branco, cinza)
+    const borderSamplesR = [], borderSamplesG = [], borderSamplesB = [];
+    for (let x = 0; x < width; x += 8) {
       for (const y of [0, height - 1]) {
         const idx = (y * width + x) * channels;
-        const a = channels === 4 ? data[idx + 3] : 255;
-        if (a < 20 || (data[idx] >= 235 && data[idx + 1] >= 235 && data[idx + 2] >= 235)) whiteBorder++;
-        totalBorder++;
+        borderSamplesR.push(data[idx]);
+        borderSamplesG.push(data[idx + 1]);
+        borderSamplesB.push(data[idx + 2]);
       }
     }
-    for (let y = 0; y < height; y += 10) {
+    for (let y = 0; y < height; y += 8) {
       for (const x of [0, width - 1]) {
         const idx = (y * width + x) * channels;
-        const a = channels === 4 ? data[idx + 3] : 255;
-        if (a < 20 || (data[idx] >= 235 && data[idx + 1] >= 235 && data[idx + 2] >= 235)) whiteBorder++;
-        totalBorder++;
+        borderSamplesR.push(data[idx]);
+        borderSamplesG.push(data[idx + 1]);
+        borderSamplesB.push(data[idx + 2]);
       }
     }
-    const isWhiteBg = (whiteBorder / totalBorder) > 0.80;
 
-    // 2. Bounding box dos pixels do produto
+    borderSamplesR.sort((a, b) => a - b);
+    borderSamplesG.sort((a, b) => a - b);
+    borderSamplesB.sort((a, b) => a - b);
+    const midIdx = Math.floor(borderSamplesR.length / 2);
+    const bgR = borderSamplesR[midIdx];
+    const bgG = borderSamplesG[midIdx];
+    const bgB = borderSamplesB[midIdx];
+
+    const isWhiteBg = bgR >= 225 && bgG >= 225 && bgB >= 225;
+    const isChromaBg = (bgR > 180 && bgB < 90) || (bgG > 160 && bgR < 110 && bgB < 110);
+
+    const isBgPixel = (r, g, b, a) => {
+      if (channels === 4 && a < 20) return true;
+      const dr = r - bgR, dg = g - bgG, db = b - bgB;
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+      return dist <= 38;
+    };
+
+    // 2. Bounding box dos pixels reais do produto (distintos do fundo detectado)
     let minX = width, maxX = 0, minY = height, maxY = 0;
     let solidCount = 0;
     for (let y = 0; y < height; y += 2) {
       for (let x = 0; x < width; x += 2) {
         const idx = (y * width + x) * channels;
         const a = channels === 4 ? data[idx + 3] : 255;
-        const isSolid = a > 20 && (data[idx] < 238 || data[idx + 1] < 238 || data[idx + 2] < 238);
+        const isSolid = !isBgPixel(data[idx], data[idx + 1], data[idx + 2], a);
         if (isSolid) {
           solidCount++;
           if (x < minX) minX = x;
@@ -939,7 +983,7 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
           if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
           const idx = (cy * width + cx) * channels;
           const a = channels === 4 ? data[idx + 3] : 255;
-          if (a > 20 && (data[idx] < 238 || data[idx + 1] < 238 || data[idx + 2] < 238)) s++;
+          if (!isBgPixel(data[idx], data[idx + 1], data[idx + 2], a)) s++;
           tot++;
         }
       }
@@ -951,23 +995,23 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
     if (checkCorner(minX, maxY - csY)) cornerFilled++;
     if (checkCorner(maxX - csX, maxY - csY)) cornerFilled++;
 
-    // Contexto de palavras-chave
-    const pkgKeywords = /\b(semente|sementes|envelope|envelopes|pacote|pacotes|cartela|cartelas|blister|sache|saches|caixa|caixas|display|refil|lata|latas)\b/i;
+    // Contexto de palavras-chave para embalagens planas/cartelas (sementes, sachês, blisters)
+    const pkgKeywords = /\b(sem\.?|semente|sementes|env\.?|envelope|envelopes|pct\.?|pacote|pacotes|cart\.?|cartela|cartelas|blist\.?|blister|sache|saches|cx\.?|caixa|caixas|disp\.?|display|refil|saco|sacos|horta|garden|adubo|fertilizante)\b/i;
     const nameSuggestsPkg = pkgKeywords.test(productName);
 
     // CAMADA 1: Alta Certeza Instantânea (3ms)
-    if (isWhiteBg) {
-      if ((fillRatio >= 0.85 && cornerFilled >= 3) || (nameSuggestsPkg && fillRatio >= 0.76)) {
+    if (isWhiteBg || isChromaBg) {
+      if ((fillRatio >= 0.82 && cornerFilled >= 3) || (nameSuggestsPkg && fillRatio >= 0.72)) {
         return 'packaging';
       }
-      if (fillRatio < 0.70 && !nameSuggestsPkg) {
+      if (fillRatio < 0.65 && !nameSuggestsPkg) {
         return 'object';
       }
     } else {
-      if (fillRatio >= 0.92 && cornerFilled === 4 && nameSuggestsPkg) {
+      if (fillRatio >= 0.88 && cornerFilled === 4 && nameSuggestsPkg) {
         return 'packaging';
       }
-      if (fillRatio < 0.75) {
+      if (fillRatio < 0.70) {
         return 'object';
       }
     }
@@ -985,10 +1029,10 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
           .jpeg({ quality: 80 })
           .toBuffer();
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(1000), // Limite de 1s para nunca prender a interface
+          signal: AbortSignal.timeout(1200),
           body: JSON.stringify({
             contents: [{
               parts: [
@@ -1011,22 +1055,108 @@ async function classifyImageHybrid(imgBuffer, productName = '', apiKey = '') {
     }
 
     // Fallback padrão se não houver internet/chave
-    return (nameSuggestsPkg || (fillRatio >= 0.80 && cornerFilled >= 3)) ? 'packaging' : 'object';
+    return (nameSuggestsPkg || (fillRatio >= 0.78 && cornerFilled >= 3)) ? 'packaging' : 'object';
   } catch (err) {
     console.error('[detectMode] Erro:', err);
     return 'object';
   }
 }
 
+async function callFlorence(command, imgBuffer, extraArg = '') {
+  if (!getRembgExePath()) return null;
+  if (!rembgProcess) {
+    startRembgProcess();
+    await waitForRembgReady(15000);
+  }
+  if (!rembgProcess || !rembgReady) return null;
+
+  const tempDir = path.join(app.getPath('temp'), 'multipic-florence');
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+  const ts = Date.now();
+  const inputPath = path.join(tempDir, `florence_${ts}.png`);
+
+  try {
+    await sharp(imgBuffer).rotate().png().toFile(inputPath);
+    const rawResult = await sendToRembg(`${command}|${inputPath}|${extraArg}`);
+    try { fs.unlinkSync(inputPath); } catch {}
+    if (rawResult && rawResult.startsWith('OK|')) {
+      return rawResult.substring(3);
+    }
+  } catch (e) {
+    try { fs.unlinkSync(inputPath); } catch {}
+    fs.appendFileSync(logFile, `[Florence-2] Erro na chamada ${command}: ${e.message}\n`);
+  }
+  return null;
+}
+
 ipcMain.handle('image:detectMode', async (event, { base64Data, productName, apiKey }) => {
   try {
     const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
     const imgBuffer = Buffer.from(rawBase64, 'base64');
+
+    const nameLower = (productName || '').toLowerCase();
+    const seedPackagingRegex = /\b(sem\.?|semente|sementes|horta|garden|adubo|fertilizante|sache|sachê|blister|cartela|envelope)\b/i;
+    const objectRegex = /\b(spray|frasco|garrafa|pote|shampoo|alicate|chave|seringa|agulha|bota|luva|ferramenta|medicamento|inj|topico|pet|coveli|calbos)\b/i;
+
+    if (seedPackagingRegex.test(nameLower)) {
+      fs.appendFileSync(logFile, `[detectMode] Regra semântica imediata: packaging (produto: "${productName}")\n`);
+      return { success: true, mode: 'packaging', source: 'semantic-rule' };
+    }
+    if (objectRegex.test(nameLower)) {
+      fs.appendFileSync(logFile, `[detectMode] Regra semântica imediata: object (produto: "${productName}")\n`);
+      return { success: true, mode: 'object', source: 'semantic-rule' };
+    }
+
+    // Classificação híbrida ultrarrápida (Sharp, < 10ms)
     const mode = await classifyImageHybrid(imgBuffer, productName, apiKey);
-    return { success: true, mode };
+    fs.appendFileSync(logFile, `[detectMode] Classificação rápida Sharp/Híbrida: ${mode} (produto: "${productName}")\n`);
+    return { success: true, mode, source: 'hybrid' };
   } catch (err) {
     console.error('Erro image:detectMode:', err);
     return { success: false, mode: 'object' };
+  }
+});
+
+ipcMain.handle('florence:classify', async (event, { base64Data, productName }) => {
+  try {
+    const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
+    const imgBuffer = Buffer.from(rawBase64, 'base64');
+    const flResultStr = await callFlorence('CLASSIFY', imgBuffer, productName || '');
+    if (flResultStr) {
+      const data = JSON.parse(flResultStr);
+      return { success: true, ...data };
+    }
+    return { success: false, error: 'Florence-2 indisponível' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('florence:ocr', async (event, { base64Data }) => {
+  try {
+    const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
+    const imgBuffer = Buffer.from(rawBase64, 'base64');
+    const ocrText = await callFlorence('OCR', imgBuffer);
+    if (ocrText !== null) {
+      return { success: true, text: ocrText };
+    }
+    return { success: false, error: 'Florence-2 indisponível' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('florence:caption', async (event, { base64Data }) => {
+  try {
+    const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
+    const imgBuffer = Buffer.from(rawBase64, 'base64');
+    const caption = await callFlorence('CAPTION', imgBuffer);
+    if (caption !== null) {
+      return { success: true, caption };
+    }
+    return { success: false, error: 'Florence-2 indisponível' };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 });
 
@@ -1046,8 +1176,10 @@ ipcMain.handle('image:removeWhiteBg', async (event, base64Data) => {
   }
 });
 
-ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode = 'auto' }) => {
-  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] Iniciando remoção de fundo (modo: ${mode}, rembg / @imgly)...\n`);
+ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode = 'auto', productName = '', productCategory = '', saveMaskPath = '', attempt = 0 }) => {
+  const strategyNames = ['Florence+SAM (padrão)', 'Cascata Neural (IS-Net/BiRefNet)', '@imgly ONNX', 'Sharp (fallback)'];
+  const strategyName = strategyNames[Math.min(attempt, strategyNames.length - 1)];
+  fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] Iniciando remoção de fundo (modo: ${mode}, produto: "${productName}", tentativa: #${attempt + 1} → ${strategyName})...\n`);
   
   try {
     const rawBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
@@ -1056,8 +1188,16 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
     let processedBuffer = null;
     let elapsed = 0;
     
-    // 1. Tentar motor Python persistente (U2Net, IS-Net, BRIA)
-    if (getRembgExePath()) {
+    // ══════════════════════════════════════════════════════════════════
+    // ESTRATÉGIA POR TENTATIVA:
+    //   attempt 0 → Python padrão (Florence+SAM → cascata neural)
+    //   attempt 1 → Python forçando cascata neural (pula Florence+SAM)
+    //   attempt 2 → @imgly ONNX direto (motor completamente diferente)
+    //   attempt 3+ → Sharp fallback (remoção de fundo branco)
+    // ══════════════════════════════════════════════════════════════════
+    
+    // Tentativa 0 e 1: usar motor Python (com modo diferente)
+    if (attempt <= 1 && getRembgExePath()) {
       try {
         if (!rembgProcess) {
           startRembgProcess();
@@ -1074,10 +1214,15 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
           const outputPath = path.join(tempDir, `output_${ts}.png`);
           
           await sharp(imgBuffer).rotate().png().toFile(inputPath);
-          fs.appendFileSync(logFile, `[rembg] Enviando para processamento Python (modo=${mode})...\n`);
+          
+          // Na tentativa 1, forçar modo "cascade_only" para pular Florence+SAM
+          const effectiveMode = attempt === 1 ? (String(mode).toLowerCase() === 'packaging' ? 'cascade_only_packaging' : 'cascade_only') : mode;
+          fs.appendFileSync(logFile, `[rembg] Enviando para processamento Python (modo=${effectiveMode}, produto="${productName}", tentativa=${attempt})...\n`);
           const startTime = Date.now();
           
-          const result = await sendToRembg(`${inputPath}|${outputPath}|${mode}`);
+          const cleanName = (productName || '').replace(/[\r\n|]/g, ' ').trim();
+          const cleanCat = (productCategory || '').replace(/[\r\n|]/g, ' ').trim();
+          const result = await sendToRembg(`${inputPath}|${outputPath}|${effectiveMode}|${cleanName}|${cleanCat}`);
           elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           fs.appendFileSync(logFile, `[rembg] Resultado Python em ${elapsed}s: ${result}\n`);
           
@@ -1093,9 +1238,9 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
       }
     }
     
-    // 2. Fallback nativo: @imgly/background-removal-node (Node.js/ONNX) sem depender de Python
-    if (!processedBuffer) {
-      fs.appendFileSync(logFile, `[rembg] Processando via motor nativo @imgly (ONNX)...\n`);
+    // Tentativa 2 (ou fallback): @imgly/background-removal-node (ONNX)
+    if (!processedBuffer && attempt <= 2) {
+      fs.appendFileSync(logFile, `[rembg] Processando via motor nativo @imgly (ONNX) - tentativa #${attempt + 1}...\n`);
       const startTime = Date.now();
       try {
         const pngInput = await sharp(imgBuffer).rotate().png().toBuffer();
@@ -1107,7 +1252,7 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
       }
     }
     
-    // 3. Fallback final garantido: remoção de fundo branco com Sharp puro (zero dependência)
+    // Tentativa 3+ (ou fallback final): Sharp puro
     if (!processedBuffer) {
       fs.appendFileSync(logFile, `[rembg] Usando fallback Sharp removeWhiteBackgroundBuffer...\n`);
       try {
@@ -1121,7 +1266,112 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
       throw new Error('Não foi possível remover o fundo da imagem.');
     }
     
-    // Trim + centralização quadrada (via Sharp)
+    // ══════ DEBUG: salvar cada etapa intermediária ══════
+    const debugDir = path.join(app.getPath('temp'), 'multipic-debug');
+    if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
+    // Limpeza: remove arquivos de debug com mais de 1 dia para não acumular em disco
+    try {
+      const _limite = Date.now() - 24 * 60 * 60 * 1000;
+      for (const f of fs.readdirSync(debugDir)) {
+        const fp = path.join(debugDir, f);
+        try { if (fs.statSync(fp).mtimeMs < _limite) fs.unlinkSync(fp); } catch {}
+      }
+    } catch {}
+    const debugTs = Date.now();
+    
+    // Etapa 0: Buffer ANTES do processamento Python (imagem de entrada)
+    try {
+      await sharp(imgBuffer).rotate().png().toFile(path.join(debugDir, `${debugTs}_0_input_original.png`));
+      fs.appendFileSync(logFile, `[DEBUG] Etapa 0: input original salvo\n`);
+    } catch(e) { fs.appendFileSync(logFile, `[DEBUG] Etapa 0 ERRO: ${e.message}\n`); }
+    
+    // Etapa 1: Resultado do Python (processedBuffer)
+    try {
+      fs.writeFileSync(path.join(debugDir, `${debugTs}_1_python_output.png`), processedBuffer);
+      const meta1 = await sharp(processedBuffer).metadata();
+      fs.appendFileSync(logFile, `[DEBUG] Etapa 1: python output ${meta1.width}x${meta1.height}, channels=${meta1.channels}, hasAlpha=${meta1.hasAlpha}\n`);
+    } catch(e) { fs.appendFileSync(logFile, `[DEBUG] Etapa 1 ERRO: ${e.message}\n`); }
+    
+    // ──────────────────────────────────────────────────────────────────
+    // RECOMPOSIÇÃO: O motor de remoção de fundo pode alterar/escurecer
+    // os pixels do produto (artefatos de borda). A solução é extrair
+    // APENAS a máscara alpha do resultado e aplicá-la sobre os pixels
+    // da imagem original, garantindo que as cores do produto fiquem intactas.
+    // ──────────────────────────────────────────────────────────────────
+    {
+      // Obter pixels raw do resultado do Python (com alpha)
+      const { data: pyData, info: pyInfo } = await sharp(processedBuffer)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const pyW = pyInfo.width, pyH = pyInfo.height;
+      
+      // Obter pixels raw da imagem original, redimensionada para o mesmo tamanho
+      const origMeta = await sharp(imgBuffer).metadata();
+      let origResized;
+      if (origMeta.width !== pyW || origMeta.height !== pyH) {
+        origResized = await sharp(imgBuffer)
+          .resize(pyW, pyH)
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+      } else {
+        origResized = await sharp(imgBuffer)
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+      }
+      const origData = origResized.data;
+      
+      // Criar buffer final: pixels da original + alpha do Python
+      const composited = Buffer.alloc(pyW * pyH * 4);
+      let recomposedCount = 0;
+      
+      for (let i = 0; i < pyW * pyH; i++) {
+        const idx = i * 4;
+        let a = pyData[idx + 3];
+        
+        // Limpeza de alpha: remover pixels semi-transparentes residuais
+        if (a > 0 && a < 25) {
+          a = 0; // borrão fantasma
+        } else if (a > 230 && a < 255) {
+          a = 255; // solidificar borda
+        } else if (a > 0 && a < 80) {
+          a = 0; // resíduo semi-transparente
+        }
+        
+        // Usar pixels da imagem ORIGINAL com a máscara alpha do Python
+        composited[idx]     = origData[idx];     // R original
+        composited[idx + 1] = origData[idx + 1]; // G original
+        composited[idx + 2] = origData[idx + 2]; // B original
+        composited[idx + 3] = a;                 // Alpha do Python (limpo)
+        
+        if (a > 0 && (pyData[idx] !== origData[idx] || pyData[idx+1] !== origData[idx+1] || pyData[idx+2] !== origData[idx+2])) {
+          recomposedCount++;
+        }
+      }
+      
+      processedBuffer = await sharp(composited, { raw: { width: pyW, height: pyH, channels: 4 } })
+        .png()
+        .toBuffer();
+      
+      fs.appendFileSync(logFile, `[RECOMPOSE] Pixels recompostos com original: ${recomposedCount} pixels corrigidos\n`);
+      
+      // Debug: salvar etapa de recomposição
+      try {
+        fs.writeFileSync(path.join(debugDir, `${debugTs}_1b_after_recompose.png`), processedBuffer);
+      } catch(e) {}
+    }
+    
+    // ──────────────────────────────────────────────────────────────────
+    // Pipeline: trim → resize → centralizar em 1024x1024 (tudo via sharp)
+    // IMPORTANTE: NÃO deixar o canvas HTML5 fazer resize com drawImage!
+    // O canvas usa composição premultiplicada que escurece bordas semi-transparentes.
+    // ──────────────────────────────────────────────────────────────────
+    const TARGET_SIZE = 1024;
+    const PRODUCT_RATIO = 0.86; // Produto ocupa 86% do canvas (7% margem cada lado)
+    
+    // 1. Trim: remover transparência ao redor do produto
     const trimmedBuffer = await sharp(processedBuffer)
       .trim()
       .png()
@@ -1131,16 +1381,31 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
     const tw = trimmedMeta.width;
     const th = trimmedMeta.height;
     
-    const maxDim = Math.max(tw, th);
-    const margin = Math.round(maxDim * 0.05);
-    const squareSize = maxDim + (margin * 2);
+    // Etapa 2: Após trim
+    try {
+      fs.writeFileSync(path.join(debugDir, `${debugTs}_2_after_trim.png`), trimmedBuffer);
+      fs.appendFileSync(logFile, `[DEBUG] Etapa 2: after trim ${tw}x${th}\n`);
+    } catch(e) { fs.appendFileSync(logFile, `[DEBUG] Etapa 2 ERRO: ${e.message}\n`); }
     
-    const padLeft = Math.round((squareSize - tw) / 2);
-    const padRight = squareSize - tw - padLeft;
-    const padTop = Math.round((squareSize - th) / 2);
-    const padBottom = squareSize - th - padTop;
+    // 2. Calcular o tamanho final do produto dentro do canvas 1024x1024
+    const maxProductPx = Math.round(TARGET_SIZE * PRODUCT_RATIO); // 881px
+    const scale = Math.min(maxProductPx / tw, maxProductPx / th);
+    const productW = Math.round(tw * scale);
+    const productH = Math.round(th * scale);
     
-    const squareBuffer = await sharp(trimmedBuffer)
+    // 3. Resize do produto para o tamanho correto (via sharp, sem premultiplicação)
+    const resizedBuffer = await sharp(trimmedBuffer)
+      .resize(productW, productH, { fit: 'fill' })
+      .png()
+      .toBuffer();
+    
+    // 4. Centralizar no canvas 1024x1024 com padding transparente
+    const padLeft = Math.round((TARGET_SIZE - productW) / 2);
+    const padRight = TARGET_SIZE - productW - padLeft;
+    const padTop = Math.round((TARGET_SIZE - productH) / 2);
+    const padBottom = TARGET_SIZE - productH - padTop;
+    
+    const finalBuffer = await sharp(resizedBuffer)
       .extend({
         top: padTop,
         bottom: padBottom,
@@ -1151,9 +1416,16 @@ ipcMain.handle('image:removeBgChroma', async (event, { base64Data, apiKey, mode 
       .png()
       .toBuffer();
     
-    const resultBase64 = squareBuffer.toString('base64');
+    // Etapa 3: Final 1024x1024
+    try {
+      fs.writeFileSync(path.join(debugDir, `${debugTs}_3_final_1024.png`), finalBuffer);
+      const metaF = await sharp(finalBuffer).metadata();
+      fs.appendFileSync(logFile, `[DEBUG] Etapa 3: final ${metaF.width}x${metaF.height}, product=${productW}x${productH}, scale=${scale.toFixed(3)}\n`);
+    } catch(e) { fs.appendFileSync(logFile, `[DEBUG] Etapa 3 ERRO: ${e.message}\n`); }
     
-    fs.appendFileSync(logFile, `[rembg] Concluído com sucesso em ${elapsed}s! Trimmed: ${tw}x${th}, Square: ${squareSize}x${squareSize}\n`);
+    const resultBase64 = finalBuffer.toString('base64');
+    
+    fs.appendFileSync(logFile, `[rembg] Concluído com sucesso em ${elapsed}s! Trimmed: ${tw}x${th}, Product: ${productW}x${productH}, Final: ${TARGET_SIZE}x${TARGET_SIZE}\n`);
     
     return {
       base64: `data:image/png;base64,${resultBase64}`,
@@ -1745,7 +2017,7 @@ ipcMain.handle('sankhya:uploadImagesFTP', async (event, { files, settings, profi
       let uploadedCount = 0;
       for (const file of files) {
         try {
-          let buffer = Buffer.from(file.buffer, 'base64');
+          let buffer = Buffer.from(String(file.buffer).replace(/^data:image\/\w+;base64,/, ''), 'base64');
           // Redimensionar rigorosamente conforme o perfil configurado
           try {
             const targetW = profile?.width ? parseInt(profile.width, 10) : 1000;
@@ -2270,7 +2542,22 @@ ipcMain.handle('gemini:extractSkus', async (event, { imageBase64, apiKey }) => {
   fs.appendFileSync(logFile, `[Gemini] Extraindo SKUs de print (${Math.round((imageBase64?.length || 0) / 1024)}KB)\n`);
   
   if (!apiKey) {
-    throw new Error('Chave da API Gemini não configurada.');
+    try {
+      const rawBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+      const imgBuffer = Buffer.from(rawBase64, 'base64');
+      const ocrText = await callFlorence('OCR', imgBuffer);
+      if (ocrText) {
+        const matches = ocrText.match(/\b\d{3,8}\b/g) || [];
+        const unique = [...new Set(matches.map(m => m.trim()))];
+        if (unique.length > 0) {
+          fs.appendFileSync(logFile, `[Florence-2] ${unique.length} SKUs extraídos localmente com sucesso: ${unique.join(', ')}\n`);
+          return { skus: unique };
+        }
+      }
+    } catch (flErr) {
+      fs.appendFileSync(logFile, `[Florence-2] OCR local falhou: ${flErr.message}\n`);
+    }
+    throw new Error('Chave da API Gemini não configurada e nenhum código detectado no OCR local.');
   }
 
   try {
@@ -2506,16 +2793,16 @@ The user provided a product image and gave these MANDATORY MODIFICATION INSTRUCT
 
 CRITICAL EDITING RULES:
 1. STRICTLY EXECUTE THE USER'S REQUEST: "${userInstructions}".
-2. If the user asks to keep only one item, isolate a single product, or remove duplicates (e.g. "deixa somente uma tesoura", "apenas uma tesoura", "deixar so uma", "keep only one item", "remover outra tesoura", etc.):
+2. If the user asks to keep only one item, isolate a single product, or remove duplicates:
    - You MUST REMOVE the second/duplicate item completely.
    - You MUST KEEP ONLY ONE SINGLE PRIMARY PRODUCT ITEM.
    - BEAUTIFULLY AND PERFECTLY CENTER the single product in the middle of the frame with balanced margins on all sides.
 3. The output image must be ultra-high resolution (at least ${targetW}x${targetH} pixels), crisp, sharp, with clean edges.
-4. Place the single product on a clean, solid, pure white background (#FFFFFF).
-5. Preserve the exact realistic material, metal reflections, textures, and true colors of the product.
+4. Place the single product on a perfectly clean, solid, pure white (#FFFFFF) background. The background MUST be completely flat, uniform, pure white with absolutely NO shadows of any kind (no drop shadows, no cast shadows, no ambient shadows, no reflections under or around the product), NO gradients, NO reflections, and NO lighting effects. The product must appear as if floating on pure white with ZERO shadow. IMPORTANT: if the product itself has white or very light surfaces, add a very subtle, thin (1-2px) light gray inner outline ONLY at the product edges — just enough to visually separate the product from the white background for clean edge detection. The product edges must be clearly distinguishable from the white background.
+5. Preserve the exact realistic material, metal reflections, textures, and true colors of the product. NEVER invent, add, or hallucinate textures, stripes, patterns, lines, or details that do not exist in the original photo. If an area of the product appears smooth, flat, or featureless in the original, keep it smooth, flat, and featureless. Do NOT add artifacts.
 6. Return ONLY the final generated image.`;
   } else {
-    editPrompt = `You are an advanced super-resolution AI for e-commerce products. Your goal is to upscale the provided product image to at least ${targetW}x${targetH} pixels. You MUST strictly preserve the exact colors, shapes, typography, and structural details of the product. Enhance clarity, sharpen edges, and remove compression artifacts. Place the product centered on a pure solid white background (#FFFFFF). Return ONLY the final generated image.`;
+    editPrompt = `You are an advanced super-resolution AI for e-commerce products. Your goal is to upscale the provided product image to at least ${targetW}x${targetH} pixels. You MUST strictly preserve the exact colors, shapes, typography, and structural details of the product. Enhance clarity, sharpen edges, and remove compression artifacts. NEVER invent, add, or hallucinate textures, stripes, patterns, lines, or details that do not exist in the original photo. If an area of the product appears smooth, flat, or featureless in the original, keep it smooth, flat, and featureless. Do NOT add artifacts. Place the product centered on a perfectly clean, solid, pure white (#FFFFFF) background. The background MUST be a completely flat, uniform, pure white color with absolutely NO shadows of any kind (no drop shadows, no cast shadows, no ambient shadows, no reflections under or around the product), NO gradients, NO reflections, and NO lighting effects. The product must appear as if floating on pure white with ZERO shadow. IMPORTANT: if the product itself has white or very light surfaces, add a very subtle, thin (1-2px) light gray inner outline ONLY at the product edges — just enough to visually separate the product from the white background for clean edge detection. Return ONLY the final generated image.`;
   }
 
   try {
@@ -2783,6 +3070,7 @@ ipcMain.handle('usage:get', async () => {
 ipcMain.handle('usage:reset', async () => {
   const monthKey = new Date().toISOString().substring(0, 7);
   const data = getUsageData();
+  if (data.monthly) delete data.monthly[monthKey];
   delete data[monthKey];
   saveUsageData(data);
   return data;
@@ -2924,8 +3212,34 @@ ipcMain.handle('files:readImageAsBase64', async (event, filePath) => {
     let isTransparent = false;
     if (metadata.hasAlpha) {
       try {
-        const stats = await image.stats();
-        isTransparent = !stats.isOpaque;
+        const { data: alphaData, info } = await sharp(buffer)
+          .resize(64, 64, { fit: 'inside' })
+          .ensureAlpha()
+          .extractChannel(3)
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+
+        const w = info.width;
+        const h = info.height;
+        const total = w * h;
+
+        // Cantos: se nenhum canto for transparente, o fundo não é transparente
+        const corners = [
+          alphaData[0],
+          alphaData[w - 1],
+          alphaData[(h - 1) * w],
+          alphaData[(h - 1) * w + (w - 1)]
+        ];
+        const cornerTransparent = corners.some(c => c < 128);
+
+        let transparentPixels = 0;
+        for (let i = 0; i < alphaData.length; i++) {
+          if (alphaData[i] < 128) {
+            transparentPixels++;
+          }
+        }
+
+        isTransparent = cornerTransparent && (transparentPixels >= Math.max(10, Math.floor(total * 0.02)));
       } catch (e) {
         isTransparent = false;
       }

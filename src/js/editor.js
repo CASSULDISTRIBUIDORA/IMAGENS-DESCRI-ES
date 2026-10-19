@@ -57,6 +57,28 @@ class Editor {
     const container = wrapper.querySelector('.canvas-container');
     if (!container) return;
     container.style.position = 'relative';
+
+    // Se já houver overlay ativo, atualiza suavemente o texto e subtítulo sem destruir nem recriar DOM
+    const existing = this._overlays.get(pageId);
+    if (existing && existing.isConnected) {
+      const labelEl = existing.querySelector('.processing-label');
+      if (labelEl) labelEl.innerHTML = `${label}<span class="processing-dots"></span>`;
+      let subEl = existing.querySelector('.processing-sub');
+      if (sub) {
+        if (!subEl) {
+          subEl = document.createElement('div');
+          subEl.className = 'processing-sub';
+          const progressEl = existing.querySelector('.processing-progress');
+          if (progressEl) existing.insertBefore(subEl, progressEl);
+          else existing.appendChild(subEl);
+        }
+        subEl.textContent = sub;
+      } else if (subEl) {
+        subEl.remove();
+      }
+      return;
+    }
+
     this.hidePageOverlay(pageId);
     const overlay = document.createElement('div');
     overlay.className = 'processing-overlay';
@@ -71,9 +93,6 @@ class Editor {
           <button type="button" class="btn btn-cancel-overlay" style="font-size: 11px; padding: 6px 14px; background: rgba(239, 68, 68, 0.25); border: 1px solid rgba(239, 68, 68, 0.5); color: #fff; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; transition: background 0.2s; white-space: nowrap;" onmouseover="this.style.background='rgba(239,68,68,0.5)'" onmouseout="this.style.background='rgba(239,68,68,0.25)'">
             <i data-lucide="x" style="width:12px;height:12px;"></i> ${cancelBtnText}
           </button>
-          <button type="button" class="btn btn-mode-embalagem" style="font-size: 11px; padding: 6px 14px; background: rgba(59, 130, 246, 0.35); border: 1px solid rgba(59, 130, 246, 0.6); color: #fff; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; transition: background 0.2s; white-space: nowrap;" onmouseover="this.style.background='rgba(59,130,246,0.55)'" onmouseout="this.style.background='rgba(59,130,246,0.35)'">
-            <i data-lucide="package" style="width:12px;height:12px;"></i> Preservar Embalagem (Tirar só Fundo)
-          </button>
         </div>
       ` : ''}
     `;
@@ -86,15 +105,6 @@ class Editor {
           e.preventDefault();
           e.stopPropagation();
           onCancel();
-        };
-      }
-      const btnEmbalagem = overlay.querySelector('.btn-mode-embalagem');
-      if (btnEmbalagem) {
-        btnEmbalagem.style.pointerEvents = 'auto';
-        btnEmbalagem.onclick = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.removeBackgroundPackaging(pageId);
         };
       }
     }
@@ -130,19 +140,29 @@ class Editor {
   
   async loadQueue(skus) {
     if (!skus) return;
-    
+
+    // Evita duas cargas simultaneas (ex.: evento queue:open + puxada de pendentes na abertura)
+    if (this._isLoadingQueue) {
+      this._queuedSkusAfter = skus;
+      return;
+    }
+
     this._isLoadingQueue = true;
+    const runId = (this._queueRunId = (this._queueRunId || 0) + 1);
+    const stillRunning = () => this._isLoadingQueue && this._queueRunId === runId;
+    const yieldUI = () => new Promise(r => setTimeout(r, 0));
     const hadActivePage = this.activePageId && this.pages.length > 0;
     const savedActiveId = this.activePageId;
     
     // Lista para guardar quais SKUs estão de fato ativos na fila agora
     const activeSkus = skus.map(s => String(s || '').trim());
+    const activeSet = new Set(activeSkus);
     
     // 1. Remover páginas que vieram da fila automaticamente, mas que não estão mais pendentes no Sankhya
     const pagesToRemove = this.pages.filter(p => {
       if (p.fromQueue) { // Só validamos páginas abertas pela fila
         const pSku = String(p.sku || '').trim();
-        return pSku && !activeSkus.includes(pSku);
+        return pSku && !activeSet.has(pSku);
       }
       return false; // Páginas manuais não são tocadas
     });
@@ -152,16 +172,29 @@ class Editor {
       this.closePage(p.id);
     }
     
-    // 2. Adicionar as novas que ainda não estão abertas
+    // 2. Adicionar as novas que ainda não estão abertas.
+    // As páginas são criadas em LOTES (devolvendo o controle à interface entre eles) para
+    // não congelar o app quando a fila tem centenas de itens.
+    const existingBySku = new Map();
+    this.pages.forEach(p => {
+      const k = String(p.sku || '').trim();
+      if (k) existingBySku.set(k, p);
+    });
+    
+    const createdIds = [];
+    const CREATE_CHUNK = 10;
+    const totalSkus = activeSkus.length;
+    let visited = 0;
     for (const sku of activeSkus) {
+      if (!stillRunning()) break;
+      visited++;
       if (!sku) continue;
       
       // Evitar duplicar se o SKU já existe em alguma página aberta
-      const existing = this.pages.find(p => String(p.sku || '').trim() === sku);
+      const existing = existingBySku.get(sku);
       if (existing) {
         // Garantir que sabemos que ele pertence à fila para poder fechá-lo no futuro se ele for processado externamente
         if (!existing.fromQueue) existing.fromQueue = true;
-        console.log(`[Queue] SKU ${sku} já está no editor (Página ${existing.id}), pulando duplicação.`);
         continue;
       }
       
@@ -173,12 +206,46 @@ class Editor {
         this.updatePageActionButtons(pageId);
         const input = document.querySelector(`.page-sku-input[data-page-id="${pageId}"]`);
         if (input) input.value = sku;
-        await this.buscarSkuSilent(pageId);
-        await new Promise(r => setTimeout(r, 300));
+        existingBySku.set(sku, page);
+        createdIds.push(pageId);
+      }
+      
+      if (createdIds.length % CREATE_CHUNK === 0) {
+        if (window.app && typeof window.app.setProgress === 'function') {
+          window.app.setProgress((visited / totalSkus) * 50, `Montando fila ${visited}/${totalSkus}`);
+        }
+        await yieldUI();
       }
     }
     
-    this._isLoadingQueue = false;
+    // 3. Buscar os dados do Sankhya com poucas consultas simultâneas (a foto de referência
+    // é carregada sob demanda, quando a página é aberta).
+    const CONCURRENCY = 4;
+    const totalCreated = createdIds.length;
+    let nextIdx = 0;
+    let doneCount = 0;
+    const worker = async () => {
+      while (stillRunning()) {
+        const i = nextIdx++;
+        if (i >= totalCreated) return;
+        try { await this.buscarSkuSilent(createdIds[i], { skipImage: true }); } catch (e) { /* silencioso */ }
+        doneCount++;
+        if (window.app && typeof window.app.setProgress === 'function') {
+          window.app.setProgress(50 + (doneCount / totalCreated) * 50, `Carregando dados ${doneCount}/${totalCreated}`);
+        }
+      }
+    };
+    if (totalCreated > 0) {
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, totalCreated) }, worker));
+    }
+    
+    const cancelled = !stillRunning();
+    if (this._queueRunId === runId) this._isLoadingQueue = false;
+    
+    if (window.app && typeof window.app.setProgress === 'function' && totalCreated > 0) {
+      window.app.setProgress(100, 'Concluído');
+      setTimeout(() => window.app.setProgress(null), 1500);
+    }
     
     if (!hadActivePage && this.pages.length > 0) {
       this.setActivePage(this.pages[0].id);
@@ -193,6 +260,11 @@ class Editor {
     }
     this.updateTabBadge();
     this.filterPagesByTab();
+    
+    // Se chegou outra atualização da fila durante a carga, processa agora
+    const next = this._queuedSkusAfter;
+    this._queuedSkusAfter = null;
+    if (next && !cancelled) await this.loadQueue(next);
   }
 
   // ======================== Abas (Tabs) ========================
@@ -272,7 +344,7 @@ class Editor {
       } else {
         btnAll.innerHTML = `<i data-lucide="save" style="width:13px;height:13px;"></i> Salvar`;
       }
-      if (window.lucide) window.lucide.createIcons();
+      this._debouncedLucide();
     }
   }
 
@@ -312,6 +384,7 @@ class Editor {
     page._imageBeforeBgRemoval = null;
     page._isUpscaled = false;
     page._upscaledImage = null;
+    page._hasTransparency = false;
     page.ocrImages = [];
     page.ocrImageBase64 = null;
     page._lastLoadedSku = '';
@@ -1178,6 +1251,9 @@ class Editor {
       img.onload = async () => {
         page.originalImage = img;
         page.currentImage = img;
+        page._upscaledImage = null;
+        page._isUpscaled = false;
+        page._imageBeforeBgRemoval = null;
         page.canvas.width = img.width;
         page.canvas.height = img.height;
         page.adjustments = { ...this.defaultAdjustments };
@@ -1191,8 +1267,13 @@ class Editor {
           page._hasTransparency = true;
           page._bgRemoved = true;
           this.syncRemoveBgButton();
+        } else {
+          page._hasTransparency = false;
+          page._bgRemoved = false;
         }
 
+        page.hasChanges = true;
+        page._userImage = true;
         this.pushHistory(pageId);
         this.renderPage(pageId);
         this.syncSidebarSliders();
@@ -1315,7 +1396,7 @@ class Editor {
     const valSpan = document.getElementById(`value-${name}`);
     if (valSpan) {
       valSpan.textContent = name === 'zoom' ? `${Math.round(value * 100)}%` : 
-                           name === 'rotation' ? `${value}?` : value;
+                           name === 'rotation' ? `${value}°` : value;
     }
     const slider = document.getElementById(`slider-${name}`);
     if (slider && slider.value != value) slider.value = value;
@@ -1466,6 +1547,7 @@ class Editor {
           exportSankhya: page.exportSankhya,
           exportTabloide: page.exportTabloide,
           variantIndex: page.variantIndex || 0,
+          fromQueue: !!page.fromQueue,
           groupId: page.groupId,
           ocrImages: Array.isArray(page.ocrImages) ? page.ocrImages : (page.ocrImageBase64 ? [page.ocrImageBase64] : []),
           ocrImageBase64: page.ocrImageBase64 || null,
@@ -1612,6 +1694,7 @@ class Editor {
           exportSankhya: savedPage.exportSankhya !== undefined ? savedPage.exportSankhya : true,
           exportTabloide: savedPage.exportTabloide !== undefined ? savedPage.exportTabloide : true,
           variantIndex: savedPage.variantIndex || 0,
+          fromQueue: !!savedPage.fromQueue,
           groupId: gId,
           ocrImages: Array.isArray(savedPage.ocrImages) ? savedPage.ocrImages : (savedPage.ocrImageBase64 ? [savedPage.ocrImageBase64] : []),
           ocrImageBase64: savedPage.ocrImageBase64 || (Array.isArray(savedPage.ocrImages) && savedPage.ocrImages[0]) || null,
@@ -1660,17 +1743,18 @@ class Editor {
 
       this._debouncedLucide();
 
-      // Re-buscar dados frescos (descrição, características, fabricante) e imagens em background
-      setTimeout(() => {
-        const settings = window.app?.settingsManager?.settings;
-        this.pages.forEach(p => {
-          if (p.sku && String(p.sku).trim().length >= 2) {
-            this.buscarSkuSilent(p.id).catch(() => {});
-            if (settings && !p.referenceImage) {
-              this._fetchProductImage(p, p.sku, settings).catch(() => {});
-            }
+      // Re-buscar dados frescos (descrição, características, fabricante) em background,
+      // com poucas consultas simultâneas (a foto de referência é carregada sob demanda)
+      setTimeout(async () => {
+        const targets = this.pages.filter(p => p.sku && String(p.sku).trim().length >= 2);
+        let idx = 0;
+        const worker = async () => {
+          while (idx < targets.length) {
+            const p = targets[idx++];
+            await this.buscarSkuSilent(p.id, { skipImage: true }).catch(() => {});
           }
-        });
+        };
+        await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker));
       }, 500);
 
       if (window.app && typeof window.app.updateStatusBarQueueCount === 'function') {
@@ -1723,41 +1807,35 @@ class Editor {
           const h = img.naturalHeight || img.height;
           if (!w || !h) return resolve(false);
 
+          // Usar canvas em miniatura (máx 64x64) para detecção ultrarrápida (<1ms) sem travamento de memória
+          const sampleW = Math.min(64, w);
+          const sampleH = Math.min(64, h);
           const canvas = document.createElement('canvas');
-          canvas.width = w;
-          canvas.height = h;
+          canvas.width = sampleW;
+          canvas.height = sampleH;
           const ctx = canvas.getContext('2d');
-          ctx.clearRect(0, 0, w, h);
-          ctx.drawImage(img, 0, 0);
+          ctx.drawImage(img, 0, 0, sampleW, sampleH);
 
-          // 1. Checar os 4 cantos primeiro (detecção instantânea de recorte PNG)
-          const cornerPositions = [
-            [0, 0],
-            [Math.max(0, w - 1), 0],
-            [0, Math.max(0, h - 1)],
-            [Math.max(0, w - 1), Math.max(0, h - 1)]
-          ];
-          let cornerTransparent = 0;
-          for (const [cx, cy] of cornerPositions) {
-            const pixel = ctx.getImageData(cx, cy, 1, 1).data;
-            if (pixel[3] < 240) cornerTransparent++;
-          }
-          if (cornerTransparent >= 2) {
-            return resolve(true);
+          const imgData = ctx.getImageData(0, 0, sampleW, sampleH).data;
+          const totalPixels = sampleW * sampleH;
+
+          // Cantos da imagem: um fundo transparente de produto sempre engloba pelo menos um dos cantos
+          const tl = imgData[3];
+          const tr = imgData[(sampleW - 1) * 4 + 3];
+          const bl = imgData[((sampleH - 1) * sampleW) * 4 + 3];
+          const br = imgData[((sampleH - 1) * sampleW + (sampleW - 1)) * 4 + 3];
+          const cornerTransparent = (tl < 128 || tr < 128 || bl < 128 || br < 128);
+
+          let transparentCount = 0;
+          for (let i = 3; i < imgData.length; i += 4) {
+            if (imgData[i] < 128) {
+              transparentCount++;
+            }
           }
 
-          // 2. Amostragem representativa de toda a imagem
-          const data = ctx.getImageData(0, 0, w, h).data;
-          let transparentPixels = 0;
-          const totalPixels = data.length / 4;
-          const step = Math.max(1, Math.floor(totalPixels / 20000));
-          let samples = 0;
-          for (let i = 3; i < data.length; i += step * 4) {
-            samples++;
-            if (data[i] < 240) transparentPixels++;
-          }
-          const ratio = samples > 0 ? (transparentPixels / samples) : 0;
-          resolve(ratio > 0.005); // > 0.5% transparente = já é sem fundo!
+          // Genuinamente transparente se ao menos um canto for transparente E pelo menos 2% dos pixels forem transparentes
+          const isTrans = cornerTransparent && (transparentCount >= Math.max(10, Math.floor(totalPixels * 0.02)));
+          resolve(isTrans);
         } catch (e) {
           console.warn('Erro ao verificar transparência:', e);
           resolve(false);
@@ -1791,20 +1869,80 @@ class Editor {
     const page = this.getPage(pageId);
     if (!page) return;
 
-    // Se houve upscale nesta imagem, garante o uso da versão upscale em alta definição!
-    const img = page._upscaledImage || page.originalImage || page.currentImage;
+    // Sempre utilizar a imagem atualmente ativa na página
+    const img = page.currentImage || page.originalImage;
     if (!img) return;
-    const w = img.width || page.canvas.width;
-    const h = img.height || page.canvas.height;
+    const w = img.naturalWidth || img.width || page.canvas.width;
+    const h = img.naturalHeight || img.height || page.canvas.height;
     if (!w || !h) return;
 
-    // Canvas quadrado padrão proporcional
-    const targetSize = Math.max(w, h, 1024);
-    // Produto ocupa no máximo 86% do espaço (deixando 7% de margem em toda a borda)
+    let cropX = 0, cropY = 0, cropW = w, cropH = h;
+    const hasAlpha = page._hasTransparency || false;
+    const targetSize = 1024;
+
+    // ── FAST PATH: Se a imagem já é 1024x1024 e tem transparência,
+    // ela já veio pronta do sharp (Node.js) sem premultiplicação.
+    // NÃO passar pelo drawImage do canvas que escurece bordas semi-transparentes.
+    if (hasAlpha && w === targetSize && h === targetSize) {
+      const bakedImg = new Image();
+      bakedImg.onload = () => {
+        page.currentImage = bakedImg;
+        page.originalImage = bakedImg;
+        page.canvas.width = targetSize;
+        page.canvas.height = targetSize;
+        page.transform = { zoom: 1, posX: 0, posY: 0, rotation: 0 };
+        this.pushHistory(page.id);
+        this.renderPage(page.id);
+        this.syncSidebarSliders();
+        this.triggerAutosave(true);
+      };
+      bakedImg.src = img.src;
+      return;
+    }
+
+    // Se a imagem possui transparência, calcula o bounding box do produto visível (descarta sobras vazias)
+    if (hasAlpha) {
+      try {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = w;
+        tempCanvas.height = h;
+        const tCtx = tempCanvas.getContext('2d');
+        tCtx.drawImage(img, 0, 0);
+        const imgData = tCtx.getImageData(0, 0, w, h).data;
+        let minX = w, minY = h, maxX = 0, maxY = 0;
+        let found = false;
+
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const alpha = imgData[(y * w + x) * 4 + 3];
+            if (alpha > 15) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+              found = true;
+            }
+          }
+        }
+
+        if (found && maxX >= minX && maxY >= minY) {
+          cropX = minX;
+          cropY = minY;
+          cropW = maxX - minX + 1;
+          cropH = maxY - minY + 1;
+        }
+      } catch (e) {
+        cropX = 0; cropY = 0; cropW = w; cropH = h;
+      }
+    }
+
+    // Canvas quadrado padrão proporcional (1024x1024)
+    // O produto visível ocupa exatamente 86% do espaço (deixando 7% de margem em toda a borda)
     const maxDimension = targetSize * 0.86;
-    const scale = Math.min(maxDimension / w, maxDimension / h, 1.0);
-    const scaledW = Math.round(w * scale);
-    const scaledH = Math.round(h * scale);
+    // Sem trava de 1.0: amplia imagens pequenas e reduz imagens grandes para caber perfeitamente
+    const scale = Math.min(maxDimension / cropW, maxDimension / cropH);
+    const scaledW = Math.round(cropW * scale);
+    const scaledH = Math.round(cropH * scale);
 
     const squareCanvas = document.createElement('canvas');
     squareCanvas.width = targetSize;
@@ -1814,7 +1952,6 @@ class Editor {
     sCtx.imageSmoothingQuality = 'high';
 
     // Fundo branco se não for transparente
-    const hasAlpha = page._hasTransparency || false;
     if (!hasAlpha) {
       sCtx.fillStyle = '#FFFFFF';
       sCtx.fillRect(0, 0, targetSize, targetSize);
@@ -1822,7 +1959,7 @@ class Editor {
 
     const destX = Math.round((targetSize - scaledW) / 2);
     const destY = Math.round((targetSize - scaledH) / 2);
-    sCtx.drawImage(img, 0, 0, w, h, destX, destY, scaledW, scaledH);
+    sCtx.drawImage(img, cropX, cropY, cropW, cropH, destX, destY, scaledW, scaledH);
 
     const bakedImg = new Image();
     bakedImg.onload = () => {
@@ -1871,10 +2008,12 @@ class Editor {
     }, 'Cancelar Remoção (Manter Imagem)');
 
     try {
-      const sourceImage = page._upscaledImage || page.originalImage || page.currentImage;
+      const sourceImage = page.currentImage || page.originalImage;
       const res = await window.api.image.removeBgChroma({
         base64Data: sourceImage.src,
-        mode: 'packaging'
+        mode: 'packaging',
+        productName: page.productName || page.sku || '',
+        productCategory: page.productCategory || ''
       });
 
       if (page._abortOperation) {
@@ -1890,6 +2029,8 @@ class Editor {
           page.currentImage = newImg;
           page._hasTransparency = true;
           page._bgRemoved = true;
+          page.hasChanges = true;
+          page._userImage = true;
           page.canvas.width = newImg.width;
           page.canvas.height = newImg.height;
           page.transform = { zoom: 1, posX: 0, posY: 0, rotation: 0 };
@@ -1897,6 +2038,7 @@ class Editor {
           this.renderPage(page.id);
           this.syncSidebarSliders();
           this.syncRemoveBgButton();
+          this.fitAndCenterImage(page.id);
           page._isProcessing = false;
           this.hidePageOverlay(page.id);
           this.triggerAutosave(true);
@@ -1916,7 +2058,7 @@ class Editor {
       page._isProcessing = false;
       this.hidePageOverlay(page.id);
       this.fitAndCenterImage(page.id);
-      if (window.app) window.app.showToast('Erro ao recortar embalagem. Mantida com respiro.', 'warning');
+      if (window.app) window.app.showToast('Erro ao remover fundo: ' + (err.message || err), 'error');
     }
   }
 
@@ -1964,10 +2106,14 @@ class Editor {
       let result;
       
       try {
+        const attempt = page._bgRemovalAttempt || 0;
         result = await window.api.image.removeBgChroma({
           base64Data: page.currentImage.src,
           apiKey: settings?.geminiApiKey || '',
-          mode: mode
+          mode: mode,
+          productName: page.productName || page.sku || '',
+          productCategory: page.productCategory || '',
+          attempt: attempt
         });
       } catch (chromaErr) {
         console.warn('Remoção local falhou:', chromaErr);
@@ -1992,12 +2138,18 @@ class Editor {
         page.canvas.width = newImg.width;
         page.canvas.height = newImg.height;
         page._bgRemoved = true;
+        page._hasTransparency = true;
+        page.hasChanges = true;
+        page._userImage = true;
+        // Resetar contador de tentativas após sucesso aceito
+        // (será incrementado se o usuário desfazer)
         this.pushHistory(page.id);
         this.renderPage(page.id);
         page._isProcessing = false;
         this.hidePageOverlay(page.id);
         this.triggerAutosave(true);
         this.syncRemoveBgButton();
+        this.fitAndCenterImage(page.id);
         if (window.app) window.app.showToast('Fundo removido com sucesso!', 'success');
       };
       newImg.onerror = () => {
@@ -2023,11 +2175,14 @@ class Editor {
     page.canvas.height = page.currentImage.height;
     page._bgRemoved = false;
     page._imageBeforeBgRemoval = null;
+    // Incrementar tentativa para que a próxima remoção use estratégia diferente
+    page._bgRemovalAttempt = (page._bgRemovalAttempt || 0) + 1;
     this.pushHistory(page.id);
     this.renderPage(page.id);
     this.syncRemoveBgButton();
     this.fitAndCenterImage(page.id);
-    if (window.app) window.app.showToast('Remoção de fundo desfeita!', 'info');
+    const attemptNum = page._bgRemovalAttempt;
+    if (window.app) window.app.showToast(`Remoção de fundo desfeita! Próxima tentativa usará estratégia alternativa (#${attemptNum + 1})`, 'info');
   }
   
   syncRemoveBgButton() {
@@ -2133,10 +2288,10 @@ class Editor {
       return;
     }
     
-    this._executeFloodFill(page, imgX, imgY, 40);
+    this._executeFloodFill(page, imgX, imgY, 15);
   }
   
-  _executeFloodFill(page, startX, startY, tolerance = 40) {
+  _executeFloodFill(page, startX, startY, tolerance = 15) {
     const tempCanvas = document.createElement('canvas');
     const imgW = page.currentImage.naturalWidth || page.currentImage.width;
     const imgH = page.currentImage.naturalHeight || page.currentImage.height;
@@ -2162,11 +2317,14 @@ class Editor {
       return;
     }
     
-    // Flood fill via DFS (stack) — performance otimizada
+    // 1. Mapeamento de remoção via flood fill com tolerância calibrada (15)
+    // Preserva rigorosamente cinzas claros e sombras do produto
+    const removedMask = new Uint8Array(w * h);
     const visited = new Uint8Array(w * h);
     const stack = [startX + startY * w];
     visited[startX + startY * w] = 1;
     let removedCount = 0;
+    let minX = startX, maxX = startX, minY = startY, maxY = startY;
     
     while (stack.length > 0) {
       const pos = stack.pop();
@@ -2182,8 +2340,12 @@ class Editor {
       const dist = Math.sqrt(dr * dr + dg * dg + db * db);
       
       if (dist <= tolerance) {
-        data[pi + 3] = 0; // Tornar transparente
+        removedMask[pos] = 1;
         removedCount++;
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
         
         // Vizinhos 4-conectados
         if (px > 0 && !visited[pos - 1]) { visited[pos - 1] = 1; stack.push(pos - 1); }
@@ -2198,16 +2360,91 @@ class Editor {
       return;
     }
     
+    // 2. Dilatar a máscara de remoção por 1px (elimina bordinha residual)
+    const R = 1;
+    const dilated = new Uint8Array(w * h);
+    const dMinX = Math.max(0, minX - R);
+    const dMaxX = Math.min(w - 1, maxX + R);
+    const dMinY = Math.max(0, minY - R);
+    const dMaxY = Math.min(h - 1, maxY + R);
+    
+    for (let y = dMinY; y <= dMaxY; y++) {
+      for (let x = dMinX; x <= dMaxX; x++) {
+        if (removedMask[y * w + x]) {
+          dilated[y * w + x] = 1;
+          continue;
+        }
+        let found = false;
+        for (let dy = -R; dy <= R && !found; dy++) {
+          for (let dx = -R; dx <= R && !found; dx++) {
+            if (dx * dx + dy * dy > R * R) continue;
+            const ny = y + dy, nx = x + dx;
+            if (ny >= 0 && ny < h && nx >= 0 && nx < w && removedMask[ny * w + nx]) {
+              found = true;
+            }
+          }
+        }
+        if (found) dilated[y * w + x] = 1;
+      }
+    }
+    
+    // 3. Calcular distância de cada pixel de borda ao removido mais próximo (para feathering)
+    // Feathering de 2px: pixels vizinhos da remoção recebem alpha gradual
+    const FEATHER_R = 2;
+    const fMinX = Math.max(0, dMinX - FEATHER_R);
+    const fMaxX = Math.min(w - 1, dMaxX + FEATHER_R);
+    const fMinY = Math.max(0, dMinY - FEATHER_R);
+    const fMaxY = Math.min(h - 1, dMaxY + FEATHER_R);
+    
+    // 4. Aplicar alpha: removidos=0, borda=gradiente, resto=intocado
+    for (let y = fMinY; y <= fMaxY; y++) {
+      for (let x = fMinX; x <= fMaxX; x++) {
+        const pos = y * w + x;
+        const pi = pos * 4;
+        
+        if (dilated[pos]) {
+          // Pixel removido — alpha 0
+          data[pi + 3] = 0;
+        } else {
+          // Verificar se está na faixa de feathering (vizinho de pixel removido)
+          let minDist2 = (FEATHER_R + 1) * (FEATHER_R + 1);
+          for (let dy = -FEATHER_R; dy <= FEATHER_R; dy++) {
+            for (let dx = -FEATHER_R; dx <= FEATHER_R; dx++) {
+              const d2 = dx * dx + dy * dy;
+              if (d2 >= minDist2) continue;
+              const ny = y + dy, nx = x + dx;
+              if (ny >= 0 && ny < h && nx >= 0 && nx < w && dilated[ny * w + nx]) {
+                minDist2 = d2;
+              }
+            }
+          }
+          if (minDist2 < (FEATHER_R + 1) * (FEATHER_R + 1)) {
+            // Pixel na faixa de feathering: alpha gradual
+            const dist = Math.sqrt(minDist2);
+            const alpha = Math.round((dist / (FEATHER_R + 1)) * data[pi + 3]);
+            data[pi + 3] = Math.min(data[pi + 3], alpha);
+          }
+          // Fora da faixa: não toca (mantém RGB e alpha originais)
+        }
+      }
+    }
+    
     ctx.putImageData(imageData, 0, 0);
     
     const newImg = new Image();
     newImg.onload = () => {
       page.currentImage = newImg;
+      page.originalImage = newImg;
+      page._upscaledImage = null;
+      page._isUpscaled = false;
+      page._hasTransparency = true;
+      page._bgRemoved = true;
       page.canvas.width = newImg.width;
       page.canvas.height = newImg.height;
       this.pushHistory(page.id);
       this.renderPage(page.id);
-      if (window.app) window.app.showToast(`${removedCount.toLocaleString()} pixels removidos!`, 'success');
+      this.syncRemoveBgButton();
+      if (window.app) window.app.showToast(`${removedCount.toLocaleString()} pixels removidos com contorno suave!`, 'success');
     };
     newImg.src = tempCanvas.toDataURL('image/png');
   }
@@ -2233,6 +2470,7 @@ class Editor {
     });
     if (page.history.length > 30) page.history.shift();
     page.historyIndex = page.history.length - 1;
+    page.hasChanges = true;
     this.triggerAutosave();
   }
   
@@ -2388,7 +2626,7 @@ class Editor {
       }
       if (textareaNova) {
         textareaNova.value = '';
-        textareaNova.placeholder = '? Gerando descrição com IA... Aguarde.';
+        textareaNova.placeholder = '⏳ Gerando descrição com IA... Aguarde.';
         textareaNova.style.opacity = '0.5';
       }
     } else {
@@ -2567,7 +2805,7 @@ class Editor {
         if (caracteristicas) {
           if (window.app) window.app.showToast('Produto encontrado!', 'success');
         } else {
-          if (window.app) window.app.showToast('Produto encontrado! (sem descrição/caracter?sticas)', 'info');
+          if (window.app) window.app.showToast('Produto encontrado! (sem descrição/características)', 'info');
         }
         
         // Buscar imagem de referência em paralelo (não bloqueia)
@@ -2582,7 +2820,7 @@ class Editor {
     }
   }
 
-  async buscarSkuSilent(pageId) {
+  async buscarSkuSilent(pageId, opts = {}) {
     const page = this.getPage(pageId);
     if (!page) return;
     const sku = String(page.sku || '').trim();
@@ -2642,7 +2880,7 @@ class Editor {
       }
       
       // Buscar imagem de referência SEMPRE fresca do Sankhya (sem cache)
-      try { await this._fetchProductImage(page, sku, settings); } catch(e) { /* silencioso */ }
+      if (!opts.skipImage) { try { await this._fetchProductImage(page, sku, settings); } catch(e) { /* silencioso */ } }
       
       // Buscar endereço no CD
       try {
@@ -2721,6 +2959,15 @@ class Editor {
     }
     
     card.style.display = 'block';
+    
+    // Carregamento sob demanda da foto de referência (a fila não baixa as imagens de todos os itens)
+    if (page.referenceImage === undefined && page.sku && !page._refImgLoading) {
+      const _st = window.app?.settingsManager?.settings;
+      if (_st && _st.sankhyaSecret && _st.sankhyaToken) {
+        page._refImgLoading = true;
+        this._fetchProductImage(page, page.sku, _st).finally(() => { page._refImgLoading = false; });
+      }
+    }
     if (codeEl) codeEl.textContent = page.sku || '';
     if (nameEl) nameEl.textContent = page.productName || '';
     if (brandEl) {
@@ -3014,6 +3261,26 @@ class Editor {
   
   _brushMode = 'eraser'; // 'eraser' | 'generative'
   
+  toggleEraserTool() {
+    // Se a borracha já está ativa, desativar
+    if (this.magicEraserActive && this._brushMode === 'eraser') {
+      this.deactivateBrush();
+      const btn = document.getElementById('btn-eraser-tool');
+      if (btn) btn.classList.remove('active');
+      return;
+    }
+    
+    // Desativar varinha mágica se estiver ativa
+    this.deactivateMagicWand();
+    
+    // Ativar borracha
+    this.switchBrushTab('eraser');
+    
+    // Highlight do botão na barra vertical
+    const btn = document.getElementById('btn-eraser-tool');
+    if (btn) btn.classList.add('active');
+  }
+  
   switchBrushTab(mode) {
     const controls = document.getElementById('magic-eraser-controls');
     
@@ -3075,6 +3342,7 @@ class Editor {
     this.magicEraserActive = false;
     document.getElementById('brush-tab-eraser')?.classList.remove('active');
     document.getElementById('brush-tab-generative')?.classList.remove('active');
+    document.getElementById('btn-eraser-tool')?.classList.remove('active');
     const controls = document.getElementById('magic-eraser-controls');
     if (controls) controls.style.display = 'none';
     this.clearMagicEraserCanvas();
@@ -3304,6 +3572,7 @@ class Editor {
   
   _eraserStartPaint(e) {
     this._eraserPainting = true;
+    this._eraserLastPoint = null; // Reset do último ponto
     this._eraserPaint(e);
   }
   
@@ -3314,20 +3583,49 @@ class Editor {
     const scaleY = this._eraserCanvas.height / rect.height;
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
+    const brushR = this._eraserBrushSize * scaleX;
     
     this._eraserCtx.globalAlpha = 0.5;
     this._eraserCtx.fillStyle = this._brushMode === 'generative' ? '#4466ff' : '#ff0000';
+    
+    // Interpolar entre o último ponto e o atual para evitar bolinhas separadas
+    if (this._eraserLastPoint) {
+      const dx = x - this._eraserLastPoint.x;
+      const dy = y - this._eraserLastPoint.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const step = Math.max(1, brushR * 0.3); // passo = 30% do raio
+      
+      if (dist > step) {
+        const steps = Math.ceil(dist / step);
+        for (let i = 0; i < steps; i++) {
+          const t = i / steps;
+          const ix = this._eraserLastPoint.x + dx * t;
+          const iy = this._eraserLastPoint.y + dy * t;
+          this._eraserCtx.beginPath();
+          this._eraserCtx.arc(ix, iy, brushR, 0, Math.PI * 2);
+          this._eraserCtx.fill();
+        }
+      }
+    }
+    
+    // Desenhar no ponto atual
     this._eraserCtx.beginPath();
-    this._eraserCtx.arc(x, y, this._eraserBrushSize * scaleX, 0, Math.PI * 2);
+    this._eraserCtx.arc(x, y, brushR, 0, Math.PI * 2);
     this._eraserCtx.fill();
+    
+    this._eraserLastPoint = { x, y };
   }
   
   _eraserStopPaint(e) {
     if (!this._eraserPainting) return;
     this._eraserPainting = false;
-    // No modo generativo, mostrar prompt flutuante após pintar
+    
     if (this._brushMode === 'generative' && e) {
+      // No modo generativo, mostrar prompt flutuante após pintar
       this._showFloatingPrompt(e);
+    } else if (this._brushMode === 'eraser') {
+      // No modo borracha simples, aplicar imediatamente ao soltar o mouse
+      this.applyBrush();
     }
   }
   
@@ -3358,7 +3656,7 @@ class Editor {
     
     const settings = window._settingsManager?.settings || (window.app && window.app.settingsManager?.settings);
     if (!settings.geminiApiKey) {
-      if (window.app) window.app.showToast('Configure a API Key do Gemini nas configura??es', 'warning');
+      if (window.app) window.app.showToast('Configure a API Key do Gemini nas configurações', 'warning');
       return;
     }
 
@@ -3617,59 +3915,67 @@ class Editor {
     
     // ============================================
     // MODO BORRACHA SIMPLES (NÃO CHAMA IA)
+    // Apaga diretamente os pixels marcados
     // ============================================
     if (this._brushMode === 'eraser') {
+      const imgW = page.currentImage.naturalWidth || page.currentImage.width;
+      const imgH = page.currentImage.naturalHeight || page.currentImage.height;
+      
       const tempCanvas = document.createElement('canvas');
-      // Usar o tamanho exato da visualização atual
-      tempCanvas.width = page.canvas.width;
-      tempCanvas.height = page.canvas.height;
+      tempCanvas.width = imgW;
+      tempCanvas.height = imgH;
       const ctx = tempCanvas.getContext('2d');
       
-      // 1. Forçar render da imagem com todos os ajustes e zoom NO MOMENTO
-      // (Bake visual completo)
-      const tempImgCanvas = document.createElement('canvas');
-      tempImgCanvas.width = page.canvas.width;
-      tempImgCanvas.height = page.canvas.height;
-      const tCtx = tempImgCanvas.getContext('2d');
-      tCtx.imageSmoothingEnabled = true;
-      tCtx.imageSmoothingQuality = 'high';
-      tCtx.drawImage(page.currentImage, 0, 0);
-      this.processor.applyAdjustments(tempImgCanvas, page.adjustments);
-      const finalTransformed = this.processor.applyTransform(tempImgCanvas, page.transform);
+      // 1. Desenhar imagem original
+      ctx.drawImage(page.currentImage, 0, 0, imgW, imgH);
       
-      // 2. Desenhar essa imagem no tempCanvas
-      ctx.drawImage(finalTransformed, 0, 0);
-      
-      // 3. Apagar usando a máscara perfeitamente alinhada
+      // 2. Apagar usando a máscara (converter de coordenadas do canvas para coordenadas da imagem)
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.drawImage(this._eraserCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
-      ctx.globalCompositeOperation = 'source-over';
       
-      // 4. Regra do sistema: auto-trim e centralização proporcional do produto restante
-      const finalAdjustedCanvas = this.autoTrimAndCenterCanvas(tempCanvas, true);
+      // Converter máscara da borracha de coordenadas do canvas para coordenadas da imagem
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = imgW;
+      maskCanvas.height = imgH;
+      const mCtx = maskCanvas.getContext('2d');
+      
+      // Reverter transformações para mapear a máscara de volta à imagem original
+      const { zoom = 1, posX = 0, posY = 0, rotation = 0 } = page.transform;
+      const cw = page.canvas.width;
+      const ch = page.canvas.height;
+      
+      mCtx.save();
+      mCtx.translate(imgW / 2, imgH / 2);
+      mCtx.rotate(-(rotation * Math.PI) / 180);
+      mCtx.scale(1 / zoom, 1 / zoom);
+      mCtx.translate(-cw / 2 - posX, -ch / 2 - posY);
+      mCtx.drawImage(this._eraserCanvas, 0, 0, cw, ch);
+      mCtx.restore();
+      
+      ctx.drawImage(maskCanvas, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
 
       const btn = document.getElementById('btn-eraser-apply');
       if (btn) btn.disabled = true;
       
       const newImg = new Image();
       newImg.onload = () => {
-        // Como fizemos bake do zoom/pan/rotação/ajustes e centralizamos o objeto,
-        // resetamos as transformações para que o objeto fique perfeito no centro!
-        page.transform = { zoom: 1, posX: 0, posY: 0, rotation: 0 };
-        page.adjustments = Object.assign({}, this.defaultAdjustments);
-        this.syncSidebarSliders(); // atualiza a interface
-        
         page.currentImage = newImg;
         page.canvas.width = newImg.width;
         page.canvas.height = newImg.height;
         page.hasChanges = true;
-        this.clearMagicEraserCanvas();
+        page._hasTransparency = true;
+        this.pushHistory(page.id);
         this.renderPage(page.id);
         this.triggerAutosave(true);
         if (btn) btn.disabled = false;
-        if (window.app) window.app.showToast('Apagado e centralizado com sucesso!', 'success');
+        
+        // Reinicializar o canvas da borracha para continuar apagando
+        this.clearMagicEraserCanvas();
+        if (this.magicEraserActive) {
+          this.initMagicEraserCanvas();
+        }
       };
-      newImg.src = finalAdjustedCanvas.toDataURL('image/png');
+      newImg.src = tempCanvas.toDataURL('image/png');
       return;
     }
     
@@ -3800,7 +4106,7 @@ class Editor {
       });
       
       if (result && result.variations && result.variations.length > 0) {
-        this._inpaintData = { x1, y1, regionW, regionH, page, bakedBase64: bakedCanvas.toDataURL('image/png') };
+        this._inpaintData = { x1, y1, regionW, regionH, page, bakedBase64: bakedCanvas.toDataURL('image/png'), maskCanvas: this._buildInpaintAlphaMask(x1, y1, regionW, regionH) };
         this._showVariationPicker(result.variations);
       }
     } catch (err) {
@@ -3879,7 +4185,7 @@ class Editor {
     
     // Botão Confirmar
     const okBtn = document.createElement('button');
-    okBtn.innerHTML = '? Confirmar';
+    okBtn.innerHTML = '✓ Confirmar';
     okBtn.title = 'Confirmar escolha';
     okBtn.style.cssText = 'background:#52c41a;border:none;color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;transition:all 0.2s;opacity:0.4;';
     okBtn.addEventListener('mouseenter', () => { if (this._selectedVariationB64) okBtn.style.background = '#73d13d'; });
@@ -3893,7 +4199,7 @@ class Editor {
     
     // Botão Cancelar
     const cancelBtn = document.createElement('button');
-    cancelBtn.innerHTML = '? Cancelar';
+    cancelBtn.innerHTML = '✕ Cancelar';
     cancelBtn.title = 'Cancelar';
     cancelBtn.style.cssText = 'background:rgba(255,255,255,0.1);border:none;color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap;transition:all 0.2s;';
     cancelBtn.addEventListener('mouseenter', () => { cancelBtn.style.background = 'rgba(255,77,79,0.4)'; });
@@ -3906,7 +4212,7 @@ class Editor {
     
     // Botão Gerar Novamente
     const regenBtn = document.createElement('button');
-    regenBtn.innerHTML = '? Gerar Novamente';
+    regenBtn.innerHTML = '🔄 Gerar Novamente';
     regenBtn.title = 'Gerar novas variações';
     regenBtn.style.cssText = 'background:rgba(59,130,246,0.3);border:none;color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap;transition:all 0.2s;';
     regenBtn.addEventListener('mouseenter', () => { regenBtn.style.background = 'rgba(59,130,246,0.6)'; });
@@ -3918,7 +4224,7 @@ class Editor {
       thumbElements.forEach(t => { t.style.opacity = '0.3'; t.style.filter = 'blur(2px)'; });
       regenBtn.style.opacity = '0.4';
       regenBtn.disabled = true;
-      regenBtn.innerHTML = '? Gerando...';
+      regenBtn.innerHTML = '⏳ Gerando...';
       try {
         const result = await window.api.gemini.inpaint({
             imageBase64: this._regenerateData.imageBase64,
@@ -3928,7 +4234,7 @@ class Editor {
             apiKey: this._regenerateData.apiKey,
             mode: this._regenerateData.prompt ? 'generative' : 'eraser'
           });
-        if (result?.variationsó.length > 0) {
+        if (result?.variations?.length > 0) {
           picker.remove();
           this._showVariationPicker(result.variations);
         }
@@ -3938,7 +4244,7 @@ class Editor {
         thumbElements.forEach(t => { t.style.opacity = '1'; t.style.filter = 'none'; });
         regenBtn.style.opacity = '1';
         regenBtn.disabled = false;
-        regenBtn.innerHTML = '? Gerar Novamente';
+        regenBtn.innerHTML = '🔄 Gerar Novamente';
       }
     });
     btnContainer.appendChild(regenBtn);
@@ -3948,6 +4254,56 @@ class Editor {
     document.body.appendChild(picker);
   }
   
+  // Máscara (alpha) da área REALMENTE pintada pelo usuário, no recorte enviado ao Gemini.
+  // Usada para colar o resultado só nessa área (com borda suavizada de ~3px).
+  _buildInpaintAlphaMask(x1, y1, w, h) {
+    const src = document.createElement('canvas');
+    src.width = w;
+    src.height = h;
+    const sctx = src.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(this._eraserCanvas, x1, y1, w, h, 0, 0, w, h);
+    const id = sctx.getImageData(0, 0, w, h);
+    const dd = id.data;
+    for (let i = 0; i < dd.length; i += 4) {
+      const on = dd[i + 3] > 10;
+      dd[i] = 0; dd[i + 1] = 0; dd[i + 2] = 0;
+      dd[i + 3] = on ? 255 : 0;
+    }
+    sctx.putImageData(id, 0, 0);
+
+    // Suaviza a borda (leve expansão) para a emenda não ficar serrilhada
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const octx = out.getContext('2d', { willReadFrequently: true });
+    octx.filter = 'blur(3px)';
+    octx.drawImage(src, 0, 0);
+    octx.filter = 'none';
+    const od = octx.getImageData(0, 0, w, h);
+    const o = od.data;
+    for (let i = 0; i < o.length; i += 4) {
+      const a = o[i + 3];
+      o[i] = 0; o[i + 1] = 0; o[i + 2] = 0;
+      o[i + 3] = a < 20 ? 0 : Math.min(255, Math.round(a * 2.2));
+    }
+    octx.putImageData(od, 0, 0);
+    return out;
+  }
+
+  // Cola o resultado da IA SOMENTE dentro da área pintada (o restante da imagem não é alterado)
+  _compositeInpaintPatch(ctx, patchImg, d) {
+    const layer = document.createElement('canvas');
+    layer.width = d.regionW;
+    layer.height = d.regionH;
+    const lctx = layer.getContext('2d');
+    lctx.drawImage(patchImg, 0, 0, d.regionW, d.regionH);
+    if (d.maskCanvas) {
+      lctx.globalCompositeOperation = 'destination-in';
+      lctx.drawImage(d.maskCanvas, 0, 0);
+    }
+    ctx.drawImage(layer, d.x1, d.y1);
+  }
+
   _previewVariation(imageBase64) {
     const { x1, y1, regionW, regionH, page } = this._inpaintData || {};
     if (!page) return;
@@ -3955,8 +4311,9 @@ class Editor {
     const patchImg = new Image();
     patchImg.onload = () => {
       // Redesenhar imagem original e sobrepor o patch (preview apenas visual)
+      page.ctx.clearRect(0, 0, page.canvas.width, page.canvas.height);
       page.ctx.drawImage(page.currentImage, 0, 0);
-      page.ctx.drawImage(patchImg, x1, y1, regionW, regionH);
+      this._compositeInpaintPatch(page.ctx, patchImg, this._inpaintData);
     };
     patchImg.src = imageBase64;
   }
@@ -3967,8 +4324,9 @@ class Editor {
     
     const patchImg = new Image();
     patchImg.onload = () => {
+      page.ctx.clearRect(0, 0, page.canvas.width, page.canvas.height);
       page.ctx.drawImage(page.currentImage, 0, 0);
-      page.ctx.drawImage(patchImg, x1, y1, regionW, regionH);
+      this._compositeInpaintPatch(page.ctx, patchImg, this._inpaintData);
       
       const finalImg = new Image();
       finalImg.onload = () => {
@@ -3993,6 +4351,7 @@ class Editor {
     if (!page || !this._previewOriginalSrc) return;
     
     // Restaurar imagem original no canvas
+    page.ctx.clearRect(0, 0, page.canvas.width, page.canvas.height);
     page.ctx.drawImage(page.currentImage, 0, 0);
     this._selectedVariationB64 = null;
     this._previewOriginalSrc = null;

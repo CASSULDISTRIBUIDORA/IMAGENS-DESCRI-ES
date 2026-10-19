@@ -269,9 +269,6 @@
                         <i data-lucide="brush"></i> Pincéis IA
                     </div>
                     <div class="brush-tabs">
-                        <button class="brush-tab" id="brush-tab-eraser" onclick="window._app?.editor?.switchBrushTab('eraser')">
-                            <i data-lucide="eraser" style="width:12px;height:12px;"></i> Borracha
-                        </button>
                         <button class="brush-tab" id="brush-tab-generative" onclick="window._app?.editor?.switchBrushTab('generative')">
                             <i data-lucide="sparkles" style="width:12px;height:12px;"></i> Generativo
                         </button>
@@ -283,14 +280,6 @@
                                 <span class="range-slider-val" id="eraser-brush-val">30</span>
                             </div>
                             <input type="range" class="range-slider" min="2" max="150" value="30" id="eraser-brush-size" oninput="window._app?.editor?.updateEraserBrushSize(this.value); document.getElementById('eraser-brush-val').textContent=this.value;">
-                        </div>
-                        <div style="display: flex; gap: 6px;">
-                            <button class="btn btn-ghost btn-sm" style="flex:1; font-size: 10px;" onclick="window._app?.editor?.clearMagicEraserCanvas(); window._app?.editor?.initMagicEraserCanvas();">
-                                <i data-lucide="rotate-ccw" style="width:10px;height:10px;"></i> Limpar
-                            </button>
-                            <button class="btn btn-primary btn-sm" id="btn-eraser-apply" style="flex:1; font-size: 10px;" onclick="window._app?.editor?.applyBrush()">
-                                <i data-lucide="eraser" style="width:10px;height:10px;"></i> Apagar Seleção
-                            </button>
                         </div>
                     </div>
                     <div style="margin-top: 10px;">
@@ -309,6 +298,9 @@
             <nav class="editor-vertical-toolbar" id="editor-vertical-toolbar">
                 <button class="vtool-btn" id="btn-magic-wand" title="Varinha Mágica — Clique em uma área de cor para removê-la">
                     <i data-lucide="wand-2" style="width: 18px; height: 18px;"></i>
+                </button>
+                <button class="vtool-btn" id="btn-eraser-tool" title="Borracha — Pinte para apagar partes da imagem">
+                    <i data-lucide="eraser" style="width: 18px; height: 18px;"></i>
                 </button>
                 <button class="vtool-btn" id="btn-open-batch-import" title="Criar páginas em lote por texto livre">
                     <i data-lucide="layers" style="width: 18px; height: 18px;"></i>
@@ -634,7 +626,7 @@
                         </button>
                     </div>
                     <div class="text-xs text-secondary" style="margin-top: 4px;">
-                        50 imagens grátis/mês — Crie sua conta em <a href="#" onclick="require('electron').shell.openExternal('https://www.remove.bg/api')" style="color: var(--primary);">remove.bg/api</a>
+                        50 imagens grátis/mês — Crie sua conta em <a href="#" onclick="event.preventDefault(); window.api.shell.openExternal('https://www.remove.bg/api')" style="color: var(--primary);">remove.bg/api</a>
               
                     </div>
                     </div>

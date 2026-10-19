@@ -505,9 +505,10 @@ class App {
     });
 
     document.addEventListener('paste', (e) => {
-      if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') {
-        // Se estiver num input de texto, não roubar o paste a menos que seja imagem
-      }
+      const _tag = document.activeElement && document.activeElement.tagName;
+      if (_tag === 'INPUT' || _tag === 'TEXTAREA') return;
+      const _modalAberto = Array.from(document.querySelectorAll('.modal-overlay')).some(m => m.classList.contains('active') || (m.style.display && m.style.display !== 'none'));
+      if (_modalAberto) return;
       
       const items = (e.clipboardData || e.originalEvent.clipboardData).items;
       for (let item of items) {
@@ -577,7 +578,7 @@ class App {
         if (result?.text) {
           targetPage.description = result.text;
           targetPage.hasChanges = true;
-          this.showToast('Nova descri��o gerada para o item ' + targetPage.sku, 'success');
+          this.showToast('Nova descrição gerada para o item ' + targetPage.sku, 'success');
         }
       } catch (err) {
         targetPage._isGenerating = false;
@@ -615,20 +616,27 @@ class App {
     this._isProcessingAll = true;
     this._cancelProcessarTudo = false;
     const isManualTab = this.editor.activeTab === 'manual';
-    // 1. Encontrar todos os SKUs da aba ativa que possuem alterações (hasChanges = true)
+    
+    // 1. Encontrar todos os SKUs da aba ativa que possuem imagens prontas ou alterações
     const activePages = this.editor.pages.filter(p => isManualTab ? !p.fromQueue : p.fromQueue);
-    const skusToProcess = [...new Set(activePages.filter(p => p.hasChanges && p.sku).map(p => p.sku))];
+    const skusToProcess = [...new Set(
+      activePages
+        .filter(p => p.sku && (p.hasChanges || p.currentImage || p._userImage || (p.description && p.description.trim() !== '')))
+        .map(p => String(p.sku).trim())
+    )];
     
     if (skusToProcess.length === 0) {
-      this.showToast(isManualTab ? 'Nenhum item modificado para salvar.' : 'Nenhum item modificado para salvar e validar.', 'warning');
+      this.showToast(isManualTab ? 'Nenhum item com imagem ou modificado para salvar.' : 'Nenhum item com imagem ou modificado para salvar e validar.', 'warning');
+      this._isProcessingAll = false;
       return;
     }
 
     const confirmMsg = isManualTab
-      ? `Deseja exportar as fotos e salvar ${skusToProcess.length} produto(s) modificado(s)?`
-      : `Deseja exportar as fotos, salvar e concluir a validação de ${skusToProcess.length} produto(s) modificado(s)?`;
+      ? `Deseja exportar as fotos e salvar ${skusToProcess.length} produto(s)?`
+      : `Deseja exportar as fotos, salvar e concluir a validação de ${skusToProcess.length} produto(s)?`;
 
     if (!confirm(confirmMsg)) {
+      this._isProcessingAll = false;
       return;
     }
 
@@ -637,192 +645,46 @@ class App {
     const settings = this.settingsManager?.settings;
     if (!settings?.sankhyaSecret || !settings?.sankhyaToken) {
       this.showToast('Credenciais do Sankhya não configuradas.', 'error');
+      this._isProcessingAll = false;
       return;
     }
     if (!isManualTab && (!settings?.sankhyaQueueField || !settings?.sankhyaQueueValue)) {
       this.showToast('Campos de Conclusão MKT não configurados.', 'error');
+      this._isProcessingAll = false;
       return;
     }
 
-    const env = settings.sankhyaEnvironment || 'sandbox';
-
+    let successCount = 0;
     for (let index = 0; index < skusToProcess.length; index++) {
-        if (this._cancelProcessarTudo) {
-          this.showToast('Automação interrompida pelo usuário.', 'warning');
-          break;
-        }
+      if (this._cancelProcessarTudo) {
+        this.showToast('Automação interrompida pelo usuário.', 'warning');
+        break;
+      }
       const currentSku = skusToProcess[index];
-      const skuPages = this.editor.pages.filter(p => p.sku === currentSku);
-      // Usar a página principal do SKU para pegar a descrição (se existir)
-      const mainPage = skuPages.find(p => !p.variantIndex || p.variantIndex === 0) || skuPages[0];
       
-      this.showToast(`Processando [${index + 1}/${skusToProcess.length}]: ${currentSku}...`, 'info');
+      this.showToast(`Processando [${index + 1}/${skusToProcess.length}]: SKU ${currentSku}...`, 'info');
       this.setProgress(((index + 1) / skusToProcess.length) * 100, `${index + 1}/${skusToProcess.length}`);
 
       try {
-        // Passo 1: Exportar Imagens localmente
-        const pagesWithImages = skuPages.filter(p => p.currentImage);
-        const profiles = this.settingsManager.getActiveProfiles();
-        const erpProfile = profiles.find(p => p.name?.toLowerCase().includes('sankhya') || (p.format === 'jpg' && p.width <= 400));
-        const alternativeProfiles = profiles.filter(p => p !== erpProfile);
-        
-        for (const p of pagesWithImages) {
-          const base64 = this.editor.getProcessedBase64(p.id);
-          if (base64) {
-            const isVariant = p.variantIndex && p.variantIndex > 0;
-            if (isVariant) {
-              // Variantes: salvas estritamente nos repositórios de Tablóide/Site (NUNCA no Sankhya ERP!)
-              const filename = `${currentSku}_${p.variantIndex}`;
-              const targetProfiles = alternativeProfiles.length > 0 ? alternativeProfiles : profiles;
-              await this.exportManager.exportImage(base64, filename, targetProfiles);
-            } else {
-              // Foto principal: apenas um código (salva no Sankhya 300x300 e no Tablóide/Site)
-              const filename = currentSku;
-              await this.exportManager.exportImage(base64, filename, profiles);
-            }
-          }
-        }
-        // Passo 2: Upload FTP das imagens alternativas
-        if (!settings.sankhyaFtpHost) {
-           this.showToast('Erro: Host FTP não configurado nas Configurações! As imagens alternativas não podem ser enviadas.', 'error');
-           throw new Error("FTP não configurado");
-        }
-        
-        try {
-          const ftpFiles = [];
-          const sortedPages = [...pagesWithImages].sort((a, b) => (a.variantIndex || 0) - (b.variantIndex || 0));
-          
-          for (let i = 0; i < sortedPages.length; i++) {
-            const p = sortedPages[i];
-            const base64 = this.editor.getProcessedBase64(p.id);
-            if (base64) {
-              let fileName;
-              if (i === 0) {
-                fileName = `${currentSku}.png`;
-              } else {
-                const vIdx = p.variantIndex || (i + 1);
-                fileName = `${currentSku}_${vIdx}.png`;
-              }
-              ftpFiles.push({ buffer: base64, fileName });
-            }
-          }
-          
-          if (ftpFiles.length > 0) {
-            const ftpResult = await window.api.sankhya.uploadImagesFTP({ files: ftpFiles, settings });
-            if (!ftpResult || !ftpResult.success) {
-              throw new Error("Falha no upload FTP/SFTP");
-            }
-          }
-        } catch (ftpErr) {
-          console.error('Erro FTP:', ftpErr);
-          this.showToast('Erro critico ao enviar imagens FTP para o SKU ' + currentSku + '. As imagens nao foram registradas.', 'error');
-          continue; // Pula este SKU e nao registra as alternativas quebradas!
-        }
-
-        // Passo 3: Upload API da imagem principal
-        try {
-          if (mainPage && mainPage.currentImage) {
-            const mainBase64 = this.editor.getProcessedBase64(mainPage.id);
-            if (mainBase64) {
-              await window.api.sankhya.uploadMainImage({
-                imageBase64: mainBase64,
-                codProd: currentSku,
-                settings
-              });
-            }
-          }
-        } catch (apiErr) {
-          console.error('Erro upload foto principal:', apiErr);
-          this.showToast('Erro crítico na foto principal do SKU ' + currentSku + ': ' + apiErr.message, 'error');
-          throw apiErr; // Aborta e impede de dar como concluído
-        }
-
-        // Passo 4: Registrar imagens alternativas na TGFIMAL
-        const altImages = this._buildAlternativeImagesList(currentSku);
-        if (altImages.length > 0) {
-          await window.api.sankhya.saveAlternativeImages({
-            sku: currentSku,
-            images: altImages,
-            secret: settings.sankhyaSecret,
-            token: settings.sankhyaToken,
-            environment: env,
-            clientId: settings.sankhyaClientId,
-            settings
-          });
-        }
-
-        // Passo 5: Salvar Descrição IA
-        if (mainPage && mainPage.description && mainPage.description.trim() !== '') {
-          await window.api.sankhya.saveDescription({
-            sku: currentSku,
-            description: mainPage.description,
-            secret: settings.sankhyaSecret,
-            token: settings.sankhyaToken,
-            environment: env,
-            clientId: settings.sankhyaClientId
-          });
-        }
-
-        // Passo 6: Validar MKT (somente se for item da fila Sankhya)
-        const isFromQueue = skuPages.some(p => p.fromQueue);
-        if (isFromQueue && settings.sankhyaQueueField && settings.sankhyaQueueValue) {
-          await window.api.sankhya.markMarketingValidated({
-            sku: currentSku,
-            secret: settings.sankhyaSecret,
-            token: settings.sankhyaToken,
-            environment: env,
-            clientId: settings.sankhyaClientId,
-            queueField: settings.sankhyaQueueField,
-            queueValue: settings.sankhyaQueueValue,
-            codUsu: settings.sankhyaCodUsu || ''
-          });
-        }
-
-        // Concluído para este SKU
-        const skuItem = document.querySelector(`.sku-item[data-sku="${currentSku}"]`);
-        if (skuItem) skuItem.remove();
-
-        // Fechar as páginas deste SKU
-        const groupId = mainPage.groupId || mainPage.id;
-        const groupPagesIds = this.editor.pages.filter(p => p.groupId === groupId || p.id === groupId).map(p => p.id);
-        
-        if (groupPagesIds.length >= this.editor.pages.length) {
-          // Se for deletar todas, limpa a última
-          for (let i = groupPagesIds.length - 1; i >= 1; i--) {
-            this.editor.deletePage(groupPagesIds[i]);
-          }
-          const lastPageId = groupPagesIds[0];
-          const lastPage = this.editor.getPage(lastPageId);
-          if (lastPage) {
-            lastPage.currentImage = null;
-            lastPage.originalImage = null;
-            lastPage.sku = null;
-            lastPage.description = null;
-            lastPage.variantIndex = 0;
-            lastPage.history = [];
-            lastPage.historyIndex = -1;
-            lastPage.hasChanges = false;
-            if (lastPage.canvas) {
-              lastPage.ctx.clearRect(0, 0, lastPage.canvas.width, lastPage.canvas.height);
-            }
-          }
-          this.editor.syncSidebarSliders();
-        } else {
-          // Deleta as páginas
-          for (const pid of groupPagesIds) {
-            this.editor.deletePage(pid);
-          }
-        }
-
+        const ok = await this.processSingleSku(currentSku, {
+          main: true,
+          alternatives: true,
+          validate: !isManualTab,
+          removeFromEditor: true
+        });
+        if (ok) successCount++;
       } catch (err) {
-        console.error(`Erro ao processar ${currentSku}:`, err);
-        this.showToast(`Erro no produto ${currentSku}: ${err.message}`, 'error');
+        console.error(`Erro ao processar SKU ${currentSku}:`, err);
+        this.showToast(`Erro no SKU ${currentSku}: ${err.message}`, 'error');
       }
+
+      await new Promise(r => setTimeout(r, 400));
     }
 
+    this._isProcessingAll = false;
     this.setProgress(100, 'Concluído');
     setTimeout(() => this.setProgress(null), 2500);
-    this.showToast(isManualTab ? `Salvo com sucesso para ${skusToProcess.length} produto(s)!` : `Automação concluída para ${skusToProcess.length} produto(s)!`, 'success');
+    this.showToast(isManualTab ? `Salvo com sucesso para ${successCount} produto(s)!` : `Automação concluída para ${successCount} produto(s)!`, 'success');
     
     // Garantir que sempre existe pelo menos 1 pagina em branco
     if (this.editor.pages.length === 0 || !this.editor.pages.some(p => !p.sku)) {
@@ -854,7 +716,7 @@ class App {
     }
     
     const env = settings.sankhyaEnvironment || 'sandbox';
-    const envLabel = env === 'prod' ? 'Produção' : 'Sandbox';
+    const envLabel = env === 'production' ? 'Produção' : 'Sandbox';
     const label = tipo === 'original' ? 'descrição editada' : 'descrição IA';
     // Sincronizar texto
     if (tipo === 'original') page.descriptionOriginal = texto;
@@ -1036,9 +898,33 @@ class App {
         try {
           const file = files[0];
           const base64 = await this._fileToBase64(file);
+          const upscaleResult = await this.validateAndUpscaleImage(base64);
+          if (!upscaleResult) return;
+          const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
+          const isUpscaled = !!upscaleResult?.isUpscaled;
+          const isTransparent = !isUpscaled && await this.editor.hasTransparency(base64);
           
-          let finalBase64 = await this.validateAndUpscaleImage(base64);
-          if (!finalBase64) return;
+          if (isTransparent) {
+            const pageId = await this.editor.loadImage({
+              base64: finalBase64,
+              filePath: file.name || 'imagem_web.png',
+              format: file.type.split('/')[1] || 'png',
+              isTransparent: true
+            });
+            this.showView('editor');
+            if (pageId) {
+              this.editor.setActivePage(pageId);
+              const page = this.editor.getPage(pageId);
+              if (page) {
+                page._hasTransparency = true;
+                page._bgRemoved = true;
+                this.editor.syncRemoveBgButton();
+              }
+              this.editor.fitAndCenterImage(pageId);
+              this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+            }
+            return;
+          }
           
           const pageId = await this.editor.loadImage({
             base64: finalBase64,
@@ -1049,6 +935,11 @@ class App {
           this.showToast('Imagem carregada com sucesso!', 'success');
           if (pageId) {
             this.editor.setActivePage(pageId);
+            const page = this.editor.getPage(pageId);
+            if (page) {
+              page._isUpscaled = isUpscaled;
+              if (isUpscaled) page._upscaledImage = page.currentImage;
+            }
             const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
             await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
           }
@@ -1064,37 +955,59 @@ class App {
       
       // Verificar text/uri-list
       const uriList = e.dataTransfer.getData('text/uri-list');
-      if (uriList && (uriList.startsWith('http://') || uriList.startsWith('https://'))) {
+      if (uriList && uriList.startsWith('http')) {
         imageUrl = uriList.split('\n')[0].trim();
       }
       
-      // Verificar text/plain como fallback
+      // Se não achou, verificar text/html
       if (!imageUrl) {
-        const textData = e.dataTransfer.getData('text/plain');
-        if (textData && (textData.startsWith('http://') || textData.startsWith('https://'))) {
-          imageUrl = textData.trim();
+        const html = e.dataTransfer.getData('text/html');
+        if (html) {
+          const match = html.match(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/i);
+          if (match) imageUrl = match[1];
         }
       }
       
-      // Verificar HTML para extrair src de img
+      // Se não achou, verificar text/plain
       if (!imageUrl) {
-        const htmlData = e.dataTransfer.getData('text/html');
-        if (htmlData) {
-          const match = htmlData.match(/src=["']([^"']+)["']/);
-          if (match && match[1] && (match[1].startsWith('http://') || match[1].startsWith('https://'))) {
-            imageUrl = match[1];
-          }
+        const plain = e.dataTransfer.getData('text/plain');
+        if (plain && plain.startsWith('http')) {
+          imageUrl = plain.trim();
         }
       }
       
-      if (imageUrl && window.api && window.api.files) {
+      if (imageUrl) {
         this.showToast('Baixando imagem da internet...', 'info');
         try {
           const data = await window.api.files.downloadFromUrl(imageUrl);
+          const upscaleResult = await this.validateAndUpscaleImage(data.base64);
+          if (!upscaleResult) return;
+          const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
+          const isUpscaled = !!upscaleResult?.isUpscaled;
+          const isTransparent = !isUpscaled && (data.isTransparent || await this.editor.hasTransparency(data.base64));
           
-          let finalBase64 = await this.validateAndUpscaleImage(data.base64);
-          if (!finalBase64) return;
-          
+          if (isTransparent) {
+            const pageId = await this.editor.loadImage({
+              base64: finalBase64,
+              filePath: data.filePath,
+              format: data.format || 'png',
+              isTransparent: true
+            });
+            this.showView('editor');
+            this.showToast('Imagem baixada com sucesso!', 'success');
+            if (pageId) {
+              this.editor.setActivePage(pageId);
+              const page = this.editor.getPage(pageId);
+              if (page) {
+                page._hasTransparency = true;
+                page._bgRemoved = true;
+                this.editor.syncRemoveBgButton();
+              }
+              this.editor.fitAndCenterImage(pageId);
+              this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+            }
+            return;
+          }
           const pageId = await this.editor.loadImage({
             base64: finalBase64,
             filePath: data.filePath,
@@ -1104,6 +1017,11 @@ class App {
           this.showToast('Imagem carregada com sucesso!', 'success');
           if (pageId) {
             this.editor.setActivePage(pageId);
+            const page = this.editor.getPage(pageId);
+            if (page) {
+              page._isUpscaled = isUpscaled;
+              if (isUpscaled) page._upscaledImage = page.currentImage;
+            }
             const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
             await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
           }
@@ -1216,6 +1134,11 @@ class App {
       if (this.editor) this.editor.toggleMagicWand();
     });
     
+    // Botão "Borracha" na barra vertical
+    document.getElementById('btn-eraser-tool')?.addEventListener('click', () => {
+      if (this.editor) this.editor.toggleEraserTool();
+    });
+    
     document.getElementById('menu-remover-fundo-objeto')?.addEventListener('click', () => {
       document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('open'));
       if (this.editor) this.editor.removeBackground(null, true, 'object');
@@ -1298,7 +1221,7 @@ class App {
               if (isUpscaled) page._upscaledImage = page.currentImage;
             }
 
-            if (data.isTransparent) {
+            if (data.isTransparent && !isUpscaled) {
               if (page) {
                 page._hasTransparency = true;
                 page._bgRemoved = true;
@@ -1308,9 +1231,6 @@ class App {
               this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
             } else {
               const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
-              if (shouldAutoRemoveBg) {
-                this.editor.showPageOverlay(pageId, 'Removendo fundo', 'Inteligência Artificial trabalhando...');
-              }
               await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
             }
           }
@@ -1626,10 +1546,11 @@ class App {
 
     if (descToSave !== '') {
       mainPage.description = descToSave;
+      const descToSaveFinal = descToSave.replace(/\n*Atualizado em: \d{2}\/\d{2}\/\d{4}$/m, '').trimEnd() + `\nAtualizado em: ${new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })}`;
       try {
         await window.api.sankhya.saveDescription({
           sku: cleanSku,
-          description: descToSave,
+          description: descToSaveFinal,
           secret: settings.sankhyaSecret,
           token: settings.sankhyaToken,
           environment: env,
@@ -1837,6 +1758,7 @@ class App {
 
     let finalMode = bgMode;
     if (finalMode === 'auto') {
+      this.editor.showPageOverlay(pageId, 'Analisando produto...', 'Identificando características físicas...');
       try {
         const apiKey = this.settingsManager?.settings?.geminiApiKey || '';
         const detectRes = await window.api.image.detectMode({
@@ -1862,24 +1784,42 @@ class App {
 
   async handleDropOnPage(pageId, e) {
     this.editor.setActivePage(pageId);
-    // Feedback visual IMEDIATO ao soltar a imagem (0ms de latência percebida)
-    this.editor.showPageOverlay(pageId, 'Removendo fundo', 'Inteligência Artificial trabalhando...');
+    // Feedback visual leve inicial
+    this.editor.showPageOverlay(pageId, 'Carregando imagem...', 'Processando arquivo...');
 
     const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
     
+    // CASO 1: Arquivos locais com caminho (Explorer)
     if (files.length > 0 && files[0].path) {
       const data = await window.api.files.readImageAsBase64(files[0].path);
-      const upscaleResult = await this.validateAndUpscaleImage(data.base64);
+      
+      const upscaleResult = await this.validateAndUpscaleImage(data.base64, pageId);
       if (!upscaleResult) {
         this.editor.hidePageOverlay(pageId);
         return;
       }
       const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
-      const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       const isUpscaled = !!upscaleResult?.isUpscaled;
 
+      // Se a imagem JÁ TINHA alta resolução e JÁ ERA transparente (não precisou de upscale):
+      if (data.isTransparent && !isUpscaled) {
+        await this.editor.loadImageToPage(pageId, {
+          base64: finalBase64, filePath: files[0].path, format: data.format || 'png', isTransparent: true
+        });
+        const page = this.editor.getPage(pageId);
+        if (page) {
+          page._hasTransparency = true;
+          page._bgRemoved = true;
+          this.editor.syncRemoveBgButton();
+        }
+        this.editor.hidePageOverlay(pageId);
+        this.editor.fitAndCenterImage(pageId);
+        this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+        return;
+      }
+
       await this.editor.loadImageToPage(pageId, {
-        base64: finalBase64, filePath: files[0].path, format: data.format || 'jpg', isTransparent: data.isTransparent
+        base64: finalBase64, filePath: files[0].path, format: data.format || 'jpg', isTransparent: false
       });
 
       const page = this.editor.getPage(pageId);
@@ -1888,33 +1828,40 @@ class App {
         if (isUpscaled) page._upscaledImage = page.currentImage;
       }
 
-      if (data.isTransparent) {
-        this.editor.hidePageOverlay(pageId);
-        if (page) {
-          page._hasTransparency = true;
-          page._bgRemoved = true;
-          this.editor.syncRemoveBgButton();
-        }
-        this.editor.fitAndCenterImage(pageId);
-        this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
-        return;
-      }
-
+      const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
       return;
     }
     
+    // CASO 2: Imagem do navegador / clipboard / blob (sem caminho local)
     if (files.length > 0 && !files[0].path) {
       const file = files[0];
       const base64 = await this._fileToBase64(file);
-      const upscaleResult = await this.validateAndUpscaleImage(base64);
+      
+      const upscaleResult = await this.validateAndUpscaleImage(base64, pageId);
       if (!upscaleResult) {
         this.editor.hidePageOverlay(pageId);
         return;
       }
       const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
-      const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       const isUpscaled = !!upscaleResult?.isUpscaled;
+      const isTransparent = !isUpscaled && await this.editor.hasTransparency(base64);
+
+      if (isTransparent) {
+        await this.editor.loadImageToPage(pageId, {
+          base64: finalBase64, filePath: file.name, format: file.type.split('/')[1] || 'png', isTransparent: true
+        });
+        const page = this.editor.getPage(pageId);
+        if (page) {
+          page._hasTransparency = true;
+          page._bgRemoved = true;
+          this.editor.syncRemoveBgButton();
+        }
+        this.editor.hidePageOverlay(pageId);
+        this.editor.fitAndCenterImage(pageId);
+        this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+        return;
+      }
 
       await this.editor.loadImageToPage(pageId, {
         base64: finalBase64, filePath: file.name, format: file.type.split('/')[1] || 'jpeg'
@@ -1926,11 +1873,12 @@ class App {
         if (isUpscaled) page._upscaledImage = page.currentImage;
       }
 
+      const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
       return;
     }
     
-    // URL
+    // CASO 3: URL arrastada da internet
     let imageUrl = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
     if (!imageUrl) {
       const html = e.dataTransfer.getData('text/html');
@@ -1941,14 +1889,31 @@ class App {
     if (imageUrl && imageUrl.startsWith('http')) {
       this.showToast('Baixando imagem...', 'info');
       const data = await window.api.files.downloadFromUrl(imageUrl);
-      const upscaleResult = await this.validateAndUpscaleImage(data.base64);
+      
+      const upscaleResult = await this.validateAndUpscaleImage(data.base64, pageId);
       if (!upscaleResult) {
         this.editor.hidePageOverlay(pageId);
         return;
       }
       const finalBase64 = typeof upscaleResult === 'string' ? upscaleResult : upscaleResult.base64;
-      const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       const isUpscaled = !!upscaleResult?.isUpscaled;
+      const isTransparent = !isUpscaled && (data.isTransparent || await this.editor.hasTransparency(data.base64));
+
+      if (isTransparent) {
+        await this.editor.loadImageToPage(pageId, {
+          base64: finalBase64, filePath: data.filePath, format: data.format || 'png', isTransparent: true
+        });
+        const page = this.editor.getPage(pageId);
+        if (page) {
+          page._hasTransparency = true;
+          page._bgRemoved = true;
+          this.editor.syncRemoveBgButton();
+        }
+        this.editor.hidePageOverlay(pageId);
+        this.editor.fitAndCenterImage(pageId);
+        this.showToast('Imagem PNG sem fundo detectada! Fundo transparente preservado.', 'success');
+        return;
+      }
 
       await this.editor.loadImageToPage(pageId, {
         base64: finalBase64, filePath: data.filePath, format: data.format || 'jpg'
@@ -1960,6 +1925,7 @@ class App {
         if (isUpscaled) page._upscaledImage = page.currentImage;
       }
 
+      const shouldAutoRemoveBg = upscaleResult?.removeBg !== false;
       await this.applyPostImageRemoval(pageId, finalBase64, upscaleResult?.bgMode || (shouldAutoRemoveBg ? 'auto' : 'none'));
     } else {
       this.editor.hidePageOverlay(pageId);
@@ -2150,6 +2116,10 @@ class App {
               const img = new Image();
               img.onload = () => {
                 activePage.currentImage = img;
+                activePage.originalImage = img;
+                activePage._upscaledImage = null;
+                activePage._isUpscaled = false;
+                activePage._imageBeforeBgRemoval = null;
                 activePage.canvas.width = img.width;
                 activePage.canvas.height = img.height;
                 activePage.hasChanges = true;
@@ -2178,8 +2148,15 @@ class App {
             if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return;
             e.preventDefault();
             activePage.currentImage = null;
+            activePage.originalImage = null;
+            activePage._upscaledImage = null;
+            activePage._isUpscaled = false;
+            activePage._imageBeforeBgRemoval = null;
+            activePage._hasTransparency = false;
+            activePage._bgRemoved = false;
             activePage.ctx.clearRect(0, 0, activePage.canvas.width, activePage.canvas.height);
             activePage.hasChanges = true;
+            this.editor.syncRemoveBgButton();
             this.editor.pushHistory(activePage.id);
             this.editor.renderPage(activePage.id);
             this.showToast('Imagem removida', 'info');
@@ -2210,14 +2187,64 @@ class App {
     }
   }
   
-  async validateAndUpscaleImage(base64) {
+  async flattenImageOnWhite(base64) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth || img.width;
+        c.height = img.naturalHeight || img.height;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(img, 0, 0);
+        resolve(c.toDataURL('image/jpeg', 0.98));
+      };
+      img.onerror = () => resolve(base64);
+      img.src = base64;
+    });
+  }
+
+  async validateAndUpscaleImage(base64, pageId = null) {
     const res = await this.checkImageResolution(base64);
     if (res.isValid) return { base64, removeBg: true, isUpscaled: false };
-    const modalRes = await this.showUpscaleVariationsModal(base64, res);
-    if (typeof modalRes === 'string') {
-      return { base64: modalRes, removeBg: true, isUpscaled: true };
+
+    // Upscale automático direto na mesma tela (uma única versão rápida, zero modais)
+    const targetPageId = pageId || this.editor?.getActivePage()?.id;
+    if (targetPageId && this.editor) {
+      this.editor.showPageOverlay(
+        targetPageId,
+        'Ampliando resolução com IA...',
+        `Aumentando nitidez para ${res.minW || 1000}x${res.minH || 1000}px em fundo limpo...`
+      );
     }
-    return modalRes;
+
+    try {
+      const apiKey = this.settingsManager?.settings?.geminiApiKey;
+      const minW = res.minW || 1000;
+      const minH = res.minH || 1000;
+
+      // Se a imagem pequena tiver transparência, aplaina sobre branco para o Gemini enxergar o produto com perfeição
+      const hasAlpha = await this.editor.hasTransparency(base64);
+      const inputBase64 = hasAlpha ? await this.flattenImageOnWhite(base64) : base64;
+
+      const upResult = await window.api.gemini.upscale({
+        imageBase64: inputBase64,
+        targetW: minW,
+        targetH: minH,
+        apiKey,
+        customPrompt: ''
+      });
+
+      if (upResult && upResult.base64) {
+        return { base64: upResult.base64, removeBg: true, isUpscaled: true };
+      }
+    } catch (err) {
+      console.warn('Upscale IA direto falhou:', err);
+      this.showToast('Upscale falhou, prosseguindo com imagem original.', 'warning');
+    }
+
+    return { base64, removeBg: true, isUpscaled: false };
   }
 
 
@@ -2519,7 +2546,11 @@ class App {
           this.editor.pushHistory(page.id);
           this.editor.renderPage(page.id);
           
-          if (this.editor && typeof this.editor.removeBackground === 'function') {
+          if (typeof this.applyPostImageRemoval === 'function') {
+            setTimeout(() => {
+              this.applyPostImageRemoval(page.id, result.base64, 'auto');
+            }, 300);
+          } else if (this.editor && typeof this.editor.removeBackground === 'function') {
             setTimeout(() => {
               this.editor.removeBackground(page.id, true);
             }, 300);

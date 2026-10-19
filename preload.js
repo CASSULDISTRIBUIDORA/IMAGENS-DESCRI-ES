@@ -45,6 +45,11 @@ contextBridge.exposeInMainWorld('api', {
     removeWhiteBg: (base64) => ipcRenderer.invoke('image:removeWhiteBg', base64),
     detectMode: (args) => ipcRenderer.invoke('image:detectMode', args),
   },
+  florence: {
+    classify: (args) => ipcRenderer.invoke('florence:classify', args),
+    ocr: (args) => ipcRenderer.invoke('florence:ocr', args),
+    caption: (args) => ipcRenderer.invoke('florence:caption', args),
+  },
   sankhya: {
     getGroups: (args) => ipcRenderer.invoke('sankhya:getGroups', args),
     getProductImage: (args) => ipcRenderer.invoke('sankhya:getProductImage', args),

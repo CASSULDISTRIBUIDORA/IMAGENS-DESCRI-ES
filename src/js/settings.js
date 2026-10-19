@@ -461,7 +461,7 @@ class SettingsManager {
     try {
       const allData = await window.api.usage.get();
       const monthKey = new Date().toISOString().substring(0, 7);
-      const month = allData[monthKey] || {};
+      const month = (allData.monthly && allData.monthly[monthKey]) || allData[monthKey] || {};
       
       // Precos Gemini 3.6 Flash (introductory ate dez/2026)
       const INPUT_PRICE = 0.75 / 1000000;   // US$/token
